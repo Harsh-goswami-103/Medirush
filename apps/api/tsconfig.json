@@ -1,0 +1,8 @@
+{
+  "extends": "@medrush/config/tsconfig/node.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src", "test", "prisma/seed.ts", "tsup.config.ts", "vitest.config.ts"]
+}

@@ -1,0 +1,116 @@
+# MedRush CI — BLUEPRINT §22.1.
+# Supply-chain policy (§10.5): every third-party action is pinned to a full commit SHA
+# (trailing comment names the tag the SHA was resolved from via `git ls-remote`).
+# Merge to main requires quality + test + build green. The e2e (Playwright golden path)
+# job is added when the web app lands (Phase 4+) and is non-blocking for the first month.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TURBO_TELEMETRY_DISABLED: "1"
+
+jobs:
+  quality:
+    name: Lint, typecheck, prisma validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Enable Corepack (pnpm from package.json packageManager)
+        run: corepack enable
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Prisma generate (apps/api)
+        # pnpm workspaces skip @prisma/client's postinstall generation (no schema
+        # at the install cwd) — without this, typecheck sees the stub client.
+        run: pnpm --filter @medrush/api exec prisma generate
+      - name: Lint + typecheck (turbo)
+        run: pnpm turbo run lint typecheck
+      - name: Prisma validate (apps/api)
+        # Schema parse only — no DB connection; dummy URL satisfies env("DATABASE_URL").
+        run: pnpm --filter @medrush/api exec prisma validate
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medrush
+
+  security:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Enable Corepack (pnpm from package.json packageManager)
+        run: corepack enable
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+      - name: pnpm audit (prod deps, fail on high+)
+        run: pnpm audit --prod --audit-level=high
+
+  test:
+    name: Unit + integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: medrush_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medrush_test
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Enable Corepack (pnpm from package.json packageManager)
+        run: corepack enable
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Prisma generate (apps/api)
+        run: pnpm --filter @medrush/api exec prisma generate
+      - name: Apply migrations
+        run: pnpm --filter @medrush/api exec prisma migrate deploy
+      - name: Test (turbo)
+        run: pnpm turbo run test
+
+  build:
+    name: Build all packages
+    runs-on: ubuntu-latest
+    needs: [quality, test]
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Enable Corepack (pnpm from package.json packageManager)
+        run: corepack enable
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Prisma generate (apps/api)
+        run: pnpm --filter @medrush/api exec prisma generate
+      - name: Build (turbo) # api, web, ops — driver app is built by EAS, not CI (§22.1)
+        run: pnpm turbo run build

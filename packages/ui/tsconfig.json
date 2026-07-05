@@ -1,0 +1,4 @@
+{
+  "extends": "@medrush/config/tsconfig/library.json",
+  "include": ["src", "tsup.config.ts"]
+}

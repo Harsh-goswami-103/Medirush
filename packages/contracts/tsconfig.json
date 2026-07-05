@@ -1,0 +1,7 @@
+{
+  "extends": "@medrush/config/tsconfig/library.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src", "test", "tsup.config.ts"]
+}

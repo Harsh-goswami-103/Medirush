@@ -1,0 +1,33 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# builds
+dist/
+.next/
+.turbo/
+*.tsbuildinfo
+.expo/
+
+# env & secrets — never in git (§10, §26)
+.env
+.env.*
+!.env.example
+*.pem
+*service-account*.json
+
+# db / local
+*.sqlite
+pgdata/
+
+# logs & coverage
+*.log
+coverage/
+playwright-report/
+test-results/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json

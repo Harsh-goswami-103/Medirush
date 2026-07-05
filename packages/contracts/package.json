@@ -1,0 +1,34 @@
+{
+  "name": "@medrush/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MedRush single source of truth: enums, Zod schemas, socket events, error codes",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "zod": "^4.1"
+  },
+  "devDependencies": {
+    "@medrush/config": "workspace:*",
+    "eslint": "^9",
+    "tsup": "^8",
+    "typescript": "^5.8",
+    "vitest": "^3"
+  }
+}

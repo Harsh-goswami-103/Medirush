@@ -1,0 +1,514 @@
+// MedRush Prisma schema — frozen contract from docs/BLUEPRINT.md §6.2.
+// Content is verbatim; generator/datasource and enum value lists are reflowed
+// one-entry-per-line because Prisma Schema Language is newline-delimited.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CUSTOMER
+  DRIVER
+  INVENTORY
+  ADMIN
+}
+
+enum ScheduleClass {
+  NONE
+  OTC
+  H
+  H1
+  // Schedule X: never stocked
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PLACED
+  RX_REVIEW
+  PACKING
+  READY
+  ASSIGNED
+  PICKED_UP
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  PREPAID
+  COD
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUND_INITIATED
+  REFUNDED
+  COD_DUE
+  COD_COLLECTED
+}
+
+enum RxStatus {
+  NA
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum OfferStatus {
+  OFFERED
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+enum TxnType {
+  CREDIT
+  DEBIT
+  PAYOUT
+  ADJUSTMENT
+}
+
+enum PayoutStatus {
+  REQUESTED
+  APPROVED
+  PAID
+  REJECTED
+}
+
+enum AdjustReason {
+  RECEIVED
+  SALE
+  CANCEL_RESTOCK
+  RETURN
+  DAMAGE
+  EXPIRY
+  CORRECTION
+}
+
+enum ActorType {
+  SYSTEM
+  CUSTOMER
+  OPS
+  DRIVER
+  ADMIN
+}
+
+model User {
+  id          String   @id @default(cuid())
+  firebaseUid String   @unique
+  phone       String   @unique            // E.164
+  name        String?
+  email       String?
+  role        Role     @default(CUSTOMER)
+  isBlocked   Boolean  @default(false)
+  codRefusalCount Int  @default(0)          // fraud signal (§10.3)
+  riskFlag    String   @default("NONE")     // NONE|WATCH|COD_BLOCKED|BLOCKED
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  addresses   Address[]
+  orders      Order[]
+  driver      DriverProfile?
+  cart        Cart?
+  devices     DeviceToken[]
+}
+
+model Address {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id])
+  label     String  @default("Home")
+  line1     String
+  line2     String?
+  landmark  String?
+  pincode   String
+  lat       Float
+  lng       Float
+  isDefault Boolean @default(false)
+  @@index([userId])
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  name      String
+  slug      String    @unique
+  imageUrl  String?
+  sortOrder Int       @default(0)
+  isActive  Boolean   @default(true)
+  products  Product[]
+}
+
+model Product {
+  id                String        @id @default(cuid())
+  name              String
+  slug              String        @unique
+  brand             String?
+  description       String        @default("")
+  categoryId        String
+  category          Category      @relation(fields: [categoryId], references: [id])
+  images            String[]      // R2 keys
+  mrpPaise          Int
+  pricePaise        Int           // selling price ≤ MRP (legal requirement)
+  gstRatePct        Int           // 0 | 5 | 12 | 18
+  hsnCode           String?
+  packSize          String        // "Strip of 10", "200ml"
+  composition       String        @default("")  // salt+strength "Paracetamol 650mg" (search + generics later)
+  binLocation       String        @default("")  // shelf address "R2-S3" → packing speed
+  barcode           String?       @unique       // EAN-13, captured at catalog entry (future scan flows)
+  requiresRx        Boolean       @default(false)
+  scheduleClass     ScheduleClass @default(NONE)
+  isColdChain       Boolean       @default(false)
+  stockQty          Int           @default(0)   // cached; batches are truth
+  lowStockThreshold Int           @default(10)
+  maxPerOrder       Int           @default(10)
+  searchKeywords    String        @default("")  // generics/salt names
+  isActive          Boolean       @default(true)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  batches           Batch[]
+  @@index([categoryId, isActive])
+}
+
+model Batch {
+  id            String   @id @default(cuid())
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id])
+  batchNo       String
+  expiryDate    DateTime @db.Date
+  qtyReceived   Int
+  qtyAvailable  Int
+  costPaise     Int                      // purchase price/unit
+  wholesaler    String
+  invoiceNo     String                   // wholesaler bill (inspection-critical)
+  receivedAt    DateTime @default(now())
+  @@unique([productId, batchNo, invoiceNo])
+  @@index([productId, expiryDate])       // FEFO picking
+}
+
+model StockAdjustment {
+  id        String       @id @default(cuid())
+  productId String
+  batchId   String?
+  delta     Int                          // signed
+  reason    AdjustReason
+  refOrderId String?
+  actorId   String?
+  note      String?
+  createdAt DateTime     @default(now())
+  @@index([productId, createdAt])
+}
+
+model Cart {
+  id        String     @id @default(cuid())
+  userId    String     @unique
+  user      User       @relation(fields: [userId], references: [id]) // opposite side of User.cart (required by Prisma; blueprint §6.2 amended)
+  updatedAt DateTime   @updatedAt
+  items     CartItem[]
+}
+model CartItem {
+  id        String @id @default(cuid())
+  cartId    String
+  cart      Cart   @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  productId String
+  qty       Int
+  @@unique([cartId, productId])
+}
+
+model Order {
+  id              String        @id @default(cuid())
+  orderNo         String        @unique          // MR-250705-0042
+  seq             Int           @default(autoincrement())
+  userId          String
+  user            User          @relation(fields: [userId], references: [id])
+  status          OrderStatus
+  paymentMethod   PaymentMethod
+  paymentStatus   PaymentStatus
+  addressSnapshot Json                            // {line1..lat,lng,phone,name}
+  distanceM       Int                             // store→customer haversine
+  itemsPaise      Int
+  deliveryPaise   Int
+  discountPaise   Int           @default(0)
+  totalPaise      Int
+  couponCode      String?
+  requiresRx      Boolean       @default(false)
+  rxStatus        RxStatus      @default(NA)
+  deliveryOtp     String?                         // 4-digit, set at READY
+  cancelReason    String?
+  invoiceNo       String?       @unique           // MR/25-26/000123 (FY-sequential)
+  invoiceKey      String?                         // R2 key of PDF
+  placedAt        DateTime?
+  packedAt        DateTime?
+  readyAt         DateTime?
+  deliveredAt     DateTime?
+  cancelledAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  items           OrderItem[]
+  events          OrderEvent[]
+  prescriptions   Prescription[]
+  delivery        Delivery?
+  payment         Payment?
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+}
+
+model OrderItem {
+  id            String  @id @default(cuid())
+  orderId       String
+  order         Order   @relation(fields: [orderId], references: [id])
+  productId     String
+  nameSnap      String
+  packSizeSnap  String
+  pricePaise    Int
+  mrpPaise      Int
+  gstRatePct    Int
+  hsnSnap       String?
+  requiresRx    Boolean
+  qty           Int
+  allocations   ItemBatchAlloc[]
+}
+
+model ItemBatchAlloc {                             // set at packing (FEFO)
+  id          String    @id @default(cuid())
+  orderItemId String
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id])
+  batchId     String
+  batchNoSnap String
+  expirySnap  DateTime  @db.Date
+  qty         Int
+}
+
+model OrderEvent {                                 // append-only audit trail
+  id        String      @id @default(cuid())
+  orderId   String
+  order     Order       @relation(fields: [orderId], references: [id])
+  from      OrderStatus?
+  to        OrderStatus
+  actorType ActorType
+  actorId   String?
+  note      String?
+  createdAt DateTime    @default(now())
+  @@index([orderId, createdAt])
+}
+
+model Prescription {
+  id           String   @id @default(cuid())
+  orderId      String
+  order        Order    @relation(fields: [orderId], references: [id])
+  fileKey      String                              // R2 private
+  mimeType     String
+  status       RxStatus @default(PENDING)
+  patientName  String?                             // captured for H1 register
+  doctorName   String?
+  reviewerId   String?
+  reviewNote   String?
+  createdAt    DateTime @default(now())
+  reviewedAt   DateTime?
+}
+
+model DriverProfile {
+  id          String    @id @default(cuid())
+  userId      String    @unique
+  user        User      @relation(fields: [userId], references: [id])
+  vehicleType String    @default("bike")
+  vehicleNo   String?
+  licenseNo   String?
+  isVerified  Boolean   @default(false)
+  isOnline    Boolean   @default(false)
+  lastLat     Float?
+  lastLng     Float?
+  lastSeenAt  DateTime?
+  wallet      Wallet?
+  offers      DeliveryOffer[]
+  deliveries  Delivery[]
+}
+
+model DeliveryOffer {
+  id        String      @id @default(cuid())
+  orderId   String
+  driverId  String
+  driver    DriverProfile @relation(fields: [driverId], references: [id])
+  status    OfferStatus @default(OFFERED)
+  wave      Int         @default(1)
+  offeredAt DateTime    @default(now())
+  respondedAt DateTime?
+  @@unique([orderId, driverId])
+  @@index([driverId, status])
+}
+
+model Delivery {                                   // the accepted assignment
+  id             String   @id @default(cuid())
+  orderId        String   @unique
+  order          Order    @relation(fields: [orderId], references: [id])
+  driverId       String
+  driver         DriverProfile @relation(fields: [driverId], references: [id])
+  acceptedAt     DateTime @default(now())
+  pickedUpAt     DateTime?
+  deliveredAt    DateTime?
+  otpVerifiedAt  DateTime?
+  distanceM      Int
+  commissionPaise Int?                             // set on DELIVERED
+  codCollectedPaise Int?                           // COD orders
+}
+
+model Wallet {
+  id       String @id @default(cuid())
+  driverId String @unique
+  driver   DriverProfile @relation(fields: [driverId], references: [id])
+  balancePaise Int @default(0)
+  txns     WalletTxn[]
+}
+model WalletTxn {                                  // append-only ledger
+  id           String   @id @default(cuid())
+  walletId     String
+  wallet       Wallet   @relation(fields: [walletId], references: [id])
+  type         TxnType
+  amountPaise  Int                                 // always positive
+  balanceAfterPaise Int
+  refType      String?                             // "ORDER" | "PAYOUT"
+  refId        String?
+  note         String?
+  createdAt    DateTime @default(now())
+  @@index([walletId, createdAt])
+}
+
+model Payout {
+  id          String       @id @default(cuid())
+  driverId    String
+  amountPaise Int
+  status      PayoutStatus @default(REQUESTED)
+  method      String       @default("UPI")
+  upiOrAcct   String
+  utr         String?
+  requestedAt DateTime     @default(now())
+  processedAt DateTime?
+  processedBy String?
+  @@index([driverId, status])
+}
+
+model Payment {
+  id            String   @id @default(cuid())
+  orderId       String   @unique
+  order         Order    @relation(fields: [orderId], references: [id])
+  rzpOrderId    String   @unique
+  rzpPaymentId  String?
+  amountPaise   Int
+  refundId      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+model PaymentEvent {                               // webhook idempotency gate
+  eventId    String   @id                          // razorpay event id
+  type       String
+  payload    Json
+  processedAt DateTime @default(now())
+}
+model IdempotencyKey {                             // client POST /orders dedupe
+  key       String   @id
+  userId    String
+  response  Json
+  createdAt DateTime @default(now())
+}
+
+model Coupon {
+  id           String   @id @default(cuid())
+  code         String   @unique
+  kind         String                               // FLAT | PERCENT
+  valuePaiseOrPct Int
+  minOrderPaise   Int    @default(0)
+  maxDiscountPaise Int?
+  usageLimit   Int?
+  perUserLimit Int      @default(1)
+  startsAt     DateTime
+  endsAt       DateTime
+  isActive     Boolean  @default(true)
+  redemptions  CouponRedemption[]
+}
+model CouponRedemption {
+  id       String @id @default(cuid())
+  couponId String
+  coupon   Coupon @relation(fields: [couponId], references: [id])
+  userId   String
+  orderId  String @unique
+  createdAt DateTime @default(now())
+  @@index([couponId, userId])
+}
+
+model StoreConfig {                                // single row (id="store")
+  id                 String  @id @default("store")
+  name               String
+  address            String
+  drugLicenseNo      String?                       // printed on invoices
+  pharmacistName     String?
+  pharmacistRegNo    String?
+  gstin              String?
+  fssaiNo            String?
+  lat                Float
+  lng                Float
+  serviceRadiusM     Int     @default(5000)
+  isOpen             Boolean @default(true)        // manual kill-switch
+  openTime           String  @default("08:00")
+  closeTime          String  @default("22:00")
+  minOrderPaise      Int     @default(9900)
+  deliveryBasePaise  Int     @default(2000)
+  freeDeliveryAbovePaise Int @default(49900)
+  codLimitPaise      Int     @default(150000)
+  commissionBasePaise Int    @default(2500)
+  commissionPerKmPaise Int   @default(500)
+  minDriverAppVersion  String @default("1.0.0")   // 426 gate (§7.1, §22.2)
+  minCustomerAppVersion String @default("1.0.0")
+  supportPhone       String
+}
+
+model AppSetting {                                 // feature flags & tunables (§5, §10.3)
+  key       String   @id                           // "cod_enabled"
+  value     Json
+  updatedBy String?
+  updatedAt DateTime @updatedAt
+}
+
+model TempLog {                                    // fridge temperature register (compliance)
+  id         String   @id @default(cuid())
+  source     String   @default("MANUAL")           // MANUAL | SENSOR (probe = Growth)
+  tempC      Float
+  byUserId   String?
+  recordedAt DateTime @default(now())
+  @@index([recordedAt])
+}
+
+model DeviceToken {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id])
+  token    String @unique
+  platform String                                   // web | android
+  updatedAt DateTime @updatedAt
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  body      String
+  type      String
+  data      Json?
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+  @@index([userId, createdAt])
+}
+
+model AuditLog {                                    // sensitive admin/ops actions
+  id        String   @id @default(cuid())
+  actorId   String
+  action    String                                  // "PRODUCT_PRICE_CHANGE" etc.
+  entity    String
+  entityId  String
+  meta      Json?
+  createdAt DateTime @default(now())
+  @@index([entity, entityId])
+}
