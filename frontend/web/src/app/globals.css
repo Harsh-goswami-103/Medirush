@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  /* The app is a centered mobile column on a subtle backdrop (§20.2 Blinkit-style). */
+  @apply bg-ink-900/[0.03] text-ink-900 antialiased;
+}
+
+/* Hide scrollbars on horizontal chip rows while keeping them scrollable. */
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
