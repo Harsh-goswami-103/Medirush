@@ -10,6 +10,8 @@ import {
   ReadyBodySchema,
   ReadyResponseSchema,
   Role,
+  RxReviewBodySchema,
+  RxReviewResponseSchema,
   StartPackingResponseSchema,
 } from "@medrush/contracts";
 import { AppError } from "../../core/errors";
@@ -18,6 +20,7 @@ import {
   listOps,
   markReady,
   opsCancel,
+  rxReview,
   startPacking,
   type OpsActor,
 } from "./opsService";
@@ -75,6 +78,23 @@ export const opsOrderRoutes: FastifyPluginAsync = async (app) => {
       },
     },
     async (request) => ({ data: await getOpsDetail(request.params.id) }),
+  );
+
+  typed.post(
+    "/ops/orders/:id/rx-review",
+    {
+      config: { roles: OPS_ROLES },
+      schema: {
+        tags: ["ops"],
+        summary: "Approve/reject the prescription on an RX_REVIEW order (reject → cancel+refund)",
+        params: IdParamsSchema,
+        body: RxReviewBodySchema,
+        response: { 200: RxReviewResponseSchema },
+      },
+    },
+    async (request) => ({
+      data: await rxReview(request.params.id, request.body, requireActor(request)),
+    }),
   );
 
   typed.post(

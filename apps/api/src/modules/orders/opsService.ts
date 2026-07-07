@@ -12,12 +12,15 @@ import {
   type OpsOrderListQuery,
   type OpsOrderSummary,
   type ReadyAllocation,
+  type RxReviewBody,
 } from "@medrush/contracts";
 import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
 import { emitOrderStatus } from "../../core/realtime";
+import { presignPrivateGet } from "../../core/storage";
 import { proposeFefo } from "../inventory/fefo";
 import { commitAllocations } from "../inventory/service";
+import { initiateRefund } from "../payments/service";
 import { restockOrder } from "./service";
 import { assertTransition } from "./stateMachine";
 
@@ -34,6 +37,9 @@ export interface OpsActor {
 
 /** Note written by the customer-cancel flow on PACKING/READY orders (§18.3). */
 const CANCEL_REQUESTED_NOTE = "cancel-requested";
+
+/** TTL for the ops prescription-viewer presigned GET (~10 min, §13). */
+const OPS_RX_URL_TTL_SEC = 600;
 
 /** Ops detail plus a derived cancel-requested marker (see contract mismatch note). */
 export type OpsOrderDetailWithMarker = OpsOrderDetail & { cancelRequested: boolean };
@@ -168,6 +174,22 @@ export async function getOpsDetail(id: string): Promise<OpsOrderDetailWithMarker
     order.status !== OrderStatus.DELIVERED &&
     order.events.some((event) => event.note === CANCEL_REQUESTED_NOTE);
 
+  // Short-TTL presigned GETs for the zoomable prescription viewer (§13). Real
+  // R2 URLs in prod, syntactically-valid stub URLs in dev/test — never the key.
+  const prescriptions = await Promise.all(
+    order.prescriptions.map(async (rx) => ({
+      id: rx.id,
+      status: rx.status,
+      mimeType: rx.mimeType,
+      fileUrl: await presignPrivateGet(rx.fileKey, OPS_RX_URL_TTL_SEC),
+      patientName: rx.patientName,
+      doctorName: rx.doctorName,
+      reviewNote: rx.reviewNote,
+      createdAt: rx.createdAt.toISOString(),
+      reviewedAt: isoOrNull(rx.reviewedAt),
+    })),
+  );
+
   return {
     id: order.id,
     orderNo: order.orderNo,
@@ -193,19 +215,7 @@ export async function getOpsDetail(id: string): Promise<OpsOrderDetailWithMarker
     createdAt: order.createdAt.toISOString(),
     customer: { id: order.user.id, name: order.user.name, phone: order.user.phone },
     items,
-    prescriptions: order.prescriptions.map((rx) => ({
-      id: rx.id,
-      status: rx.status,
-      mimeType: rx.mimeType,
-      // Phase 1 has no R2 presigner; a syntactically valid placeholder keeps
-      // the contract shape until the Phase 2 storage pass presigns for real.
-      fileUrl: `https://files.invalid/rx/${rx.fileKey}`,
-      patientName: rx.patientName,
-      doctorName: rx.doctorName,
-      reviewNote: rx.reviewNote,
-      createdAt: rx.createdAt.toISOString(),
-      reviewedAt: isoOrNull(rx.reviewedAt),
-    })),
+    prescriptions,
     events: order.events.map((event) => ({
       from: event.from,
       to: event.to,
@@ -229,6 +239,149 @@ export async function getOpsDetail(id: string): Promise<OpsOrderDetailWithMarker
 }
 
 /* ---------------------------------------------------------------- actions */
+
+/**
+ * Rx review (§7.2, §9.1; phase-2 brief §6) — INVENTORY/ADMIN adjudicate the
+ * latest prescription on an RX_REVIEW order.
+ *
+ * - APPROVED: mark the latest Prescription + order rxStatus APPROVED (the order
+ *   STAYS RX_REVIEW so ops can now start-packing — the P1 gate already checks
+ *   rxStatus APPROVED); patientName/doctorName are captured for the Schedule H1
+ *   register.
+ * - REJECTED: order → CANCELLED + restock + rxStatus/Prescription REJECTED +
+ *   reviewNote; a paid PREPAID payment is refunded post-commit (external, §14).
+ *   A note is contract-required for a rejection.
+ *
+ * AuditLog is written for both outcomes (sensitive action).
+ */
+export async function rxReview(
+  id: string,
+  body: RxReviewBody,
+  actor: OpsActor,
+): Promise<OpsOrderDetailWithMarker> {
+  const prisma = getPrisma();
+  const actorType = actorTypeFor(actor.role);
+
+  const order = await prisma.order.findUnique({
+    where: { id },
+    select: { status: true, requiresRx: true },
+  });
+  if (!order) throw new AppError("NOT_FOUND", "Order not found", 404);
+  if (!order.requiresRx || order.status !== OrderStatus.RX_REVIEW) {
+    throw new AppError("CONFLICT", "This order is not awaiting prescription review", 409, {
+      status: order.status,
+    });
+  }
+
+  // The prescription under review is the latest upload.
+  const latestRx = await prisma.prescription.findFirst({
+    where: { orderId: id },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+
+  if (body.status === RxStatus.APPROVED) {
+    if (!latestRx) {
+      throw new AppError("VALIDATION_ERROR", "No prescription has been uploaded to approve", 422);
+    }
+    const now = new Date();
+    await prisma.$transaction(async (tx) => {
+      await tx.prescription.update({
+        where: { id: latestRx.id },
+        data: {
+          status: RxStatus.APPROVED,
+          reviewerId: actor.userId,
+          reviewedAt: now,
+          patientName: body.patientName ?? undefined,
+          doctorName: body.doctorName ?? undefined,
+          reviewNote: body.note ?? undefined,
+        },
+      });
+      // Order stays RX_REVIEW; only rxStatus flips (unblocks start-packing).
+      const updated = await tx.order.updateMany({
+        where: { id, status: OrderStatus.RX_REVIEW },
+        data: { rxStatus: RxStatus.APPROVED },
+      });
+      if (updated.count !== 1) {
+        throw new AppError("CONFLICT", "Order changed concurrently — reload and retry", 409);
+      }
+      await tx.auditLog.create({
+        data: {
+          actorId: actor.userId,
+          action: "RX_APPROVED",
+          entity: "Order",
+          entityId: id,
+          meta: {
+            prescriptionId: latestRx.id,
+            patientName: body.patientName ?? null,
+            doctorName: body.doctorName ?? null,
+          },
+        },
+      });
+    });
+
+    emitOrderStatus({ id, status: OrderStatus.RX_REVIEW, rxStatus: RxStatus.APPROVED });
+    return getOpsDetail(id);
+  }
+
+  // REJECTED — the contract enforces a note (RxReviewBodySchema); guard anyway.
+  const note = body.note;
+  if (!note) {
+    throw new AppError("VALIDATION_ERROR", "A note is required to reject a prescription", 422);
+  }
+
+  await prisma.$transaction(async (tx) => {
+    assertTransition(OrderStatus.RX_REVIEW, OrderStatus.CANCELLED, actorType);
+    const updated = await tx.order.updateMany({
+      where: { id, status: OrderStatus.RX_REVIEW },
+      data: {
+        status: OrderStatus.CANCELLED,
+        rxStatus: RxStatus.REJECTED,
+        cancelReason: note,
+        cancelledAt: new Date(),
+      },
+    });
+    if (updated.count !== 1) {
+      throw new AppError("CONFLICT", "Order changed concurrently — reload and retry", 409);
+    }
+    await restockOrder(tx, id);
+    if (latestRx) {
+      await tx.prescription.update({
+        where: { id: latestRx.id },
+        data: {
+          status: RxStatus.REJECTED,
+          reviewerId: actor.userId,
+          reviewedAt: new Date(),
+          reviewNote: note,
+        },
+      });
+    }
+    await tx.orderEvent.create({
+      data: {
+        orderId: id,
+        from: OrderStatus.RX_REVIEW,
+        to: OrderStatus.CANCELLED,
+        actorType,
+        actorId: actor.userId,
+        note,
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        actorId: actor.userId,
+        action: "RX_REJECTED",
+        entity: "Order",
+        entityId: id,
+        meta: { prescriptionId: latestRx?.id ?? null, note },
+      },
+    });
+  });
+
+  // External refund OUTSIDE the tx (§14) — no-op for COD / unpaid prepaid.
+  await initiateRefund(id);
+  emitOrderStatus({ id, status: OrderStatus.CANCELLED });
+  return getOpsDetail(id);
+}
 
 /** PLACED/RX_REVIEW(approved) → PACKING (§7.2). RX_REVIEW without approval → 422 RX_REQUIRED. */
 export async function startPacking(id: string, actor: OpsActor): Promise<OpsOrderDetailWithMarker> {

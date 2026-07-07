@@ -9,6 +9,8 @@ import { orderRoutes } from "./orders/routes";
 import { opsOrderRoutes } from "./orders/opsRoutes";
 import { driverRoutes } from "./drivers/routes";
 import { walletRoutes } from "./wallet/routes";
+import { prescriptionRoutes } from "./prescriptions/routes";
+import { paymentRoutes } from "./payments/routes";
 
 /**
  * /v1 module root — registered with `{ prefix: "/v1" }` in app.ts.
@@ -27,4 +29,7 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
   await app.register(opsOrderRoutes);
   await app.register(driverRoutes);
   await app.register(walletRoutes);
+  // Phase 2
+  await app.register(prescriptionRoutes);
+  await app.register(paymentRoutes); // POST /v1/webhooks/razorpay (public, signature-gated)
 };

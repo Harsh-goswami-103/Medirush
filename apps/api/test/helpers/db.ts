@@ -21,6 +21,7 @@ const VOLATILE_TABLES = [
   "StoreConfig",
   "CouponRedemption",
   "Coupon",
+  "InvoiceCounter",
   "IdempotencyKey",
   "PaymentEvent",
   "Payment",

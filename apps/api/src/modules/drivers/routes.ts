@@ -18,8 +18,10 @@ import {
 } from "@medrush/contracts";
 import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
+import { logger } from "../../core/logger";
 import { emitOrderStatus } from "../../core/realtime";
 import { getStoreConfig } from "../../core/storeInfo";
+import { enqueueInvoicePdf } from "../../jobs/invoicePdf";
 import { assertTransition } from "../orders/stateMachine";
 import { creditWallet } from "../wallet/ledger";
 
@@ -310,6 +312,12 @@ export const driverRoutes: FastifyPluginAsync = async (app) => {
       });
 
       emitOrderStatus({ id: order.id, status: OrderStatus.DELIVERED });
+
+      // Post-delivery GST invoice (§9.7) — best-effort enqueue AFTER commit; the
+      // job is idempotent so a retry is safe and a miss never fails the delivery.
+      await enqueueInvoicePdf(order.id).catch((err) =>
+        logger.warn({ err, orderId: order.id }, "invoice enqueue failed (best-effort)"),
+      );
 
       return {
         data: { deliveredAt: now.toISOString(), commissionPaise, walletBalancePaise },

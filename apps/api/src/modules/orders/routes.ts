@@ -9,6 +9,7 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   IdParamsSchema,
   ListOrdersResponseSchema,
+  OrderInvoiceResponseSchema,
   OrderListQuerySchema,
   Role,
   TrackOrderResponseSchema,
@@ -16,6 +17,7 @@ import {
 import { AppError } from "../../core/errors";
 import { withIdempotency } from "../../core/idempotency";
 import { requireSyncedAuth } from "../../plugins/auth";
+import { getInvoiceUrl } from "../invoices/service";
 import {
   cancelOrder,
   createOrder,
@@ -120,6 +122,23 @@ export const orderRoutes: FastifyPluginAsync = async (app) => {
     async (request) => {
       const { userId, role } = requireSyncedAuth(request);
       return { data: await trackOrder(userId, role, request.params.id) };
+    },
+  );
+
+  typed.get(
+    "/orders/:id/invoice",
+    {
+      config: customerOnly,
+      schema: {
+        tags: ["orders"],
+        summary: "Presigned GST invoice PDF URL (owner; 409 until generated post-DELIVERED)",
+        params: IdParamsSchema,
+        response: { 200: OrderInvoiceResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireSyncedAuth(request);
+      return { data: await getInvoiceUrl(request.params.id, userId) };
     },
   );
 

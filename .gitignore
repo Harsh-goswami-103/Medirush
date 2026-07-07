@@ -20,6 +20,9 @@ dist/
 *.sqlite
 pgdata/
 
+# local object-storage stub (R2 stand-in in dev/test)
+.storage/
+
 # logs & coverage
 *.log
 coverage/

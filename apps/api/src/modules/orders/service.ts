@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Prisma } from "@prisma/client";
+import type { Address, Prisma, Product } from "@prisma/client";
 import {
   ActorType,
   AdjustReason,
@@ -36,6 +36,9 @@ import { getFlag } from "../../core/flags";
 import { logger } from "../../core/logger";
 import { emitOpsAlert, emitOrderNew, emitOrderStatus } from "../../core/realtime";
 import { getStoreConfig, haversineM, isStoreOpenNow } from "../../core/storeInfo";
+import { createRazorpayOrder, razorpayKeyId } from "../../core/razorpay";
+import { enqueuePaymentTimeout } from "../../jobs/paymentTimeout";
+import { initiateRefund } from "../payments/service";
 import { computeTotals, type PricedItem, type PricingCoupon } from "./pricing";
 import { makeOrderNo } from "./orderNo";
 import { assertTransition } from "./stateMachine";
@@ -231,12 +234,31 @@ const detailInclude = {
  * `withIdempotency` (24h replay) and answers 201 (new) / 200 (replayed).
  */
 export async function createOrder(userId: string, body: CreateOrderInput): Promise<CreateOrderResult> {
-  const prisma = getPrisma();
+  const ctx = await prepareCheckout(userId, body);
+  return body.paymentMethod === PaymentMethod.PREPAID
+    ? createPrepaidOrder(userId, ctx)
+    : createCodOrder(userId, ctx);
+}
 
-  // Scope decision #1: PREPAID checkout ships in Phase 2.
-  if (body.paymentMethod === PaymentMethod.PREPAID) {
-    throw new AppError("VALIDATION_ERROR", "PREPAID checkout ships in Phase 2 — use COD", 422);
-  }
+/** Shared, payment-method-agnostic checkout context (§9.2 validation output). */
+interface CheckoutContext {
+  storeConfig: Awaited<ReturnType<typeof getStoreConfig>>;
+  address: Address;
+  distanceM: number;
+  lineItems: { product: Product; qty: number }[];
+  totals: ReturnType<typeof computeTotals>;
+  requiresRx: boolean;
+  couponRow: CouponRow | null;
+  cart: { id: string };
+}
+
+/**
+ * Steps 1–5 of §9.2 (store open, address in-radius, cart valid, totals from PG
+ * prices, coupon) — identical for COD and PREPAID; the payment-method branch
+ * adds its own gates + reservation after.
+ */
+async function prepareCheckout(userId: string, body: CreateOrderInput): Promise<CheckoutContext> {
+  const prisma = getPrisma();
 
   // 1) Store open: manual kill-switch + hours + maintenance flag off (§9.2).
   const storeConfig = await getStoreConfig();
@@ -325,6 +347,26 @@ export async function createOrder(userId: string, body: CreateOrderInput): Promi
   // Arithmetic + store min-order (throws MIN_ORDER_NOT_MET below the threshold).
   const totals = computeTotals(pricedItems, storeConfig, pricingCoupon);
   const requiresRx = lineItems.some((li) => li.product.requiresRx);
+
+  return {
+    storeConfig,
+    address,
+    distanceM,
+    lineItems,
+    totals,
+    requiresRx,
+    couponRow,
+    cart: { id: cart.id },
+  };
+}
+
+/**
+ * COD checkout (§9.2 #6 gates → §9.4 reservation): lands PLACED (or RX_REVIEW),
+ * paymentStatus COD_DUE, and pings the ops board. Body unchanged from Phase 1.
+ */
+async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<CreateOrderResult> {
+  const prisma = getPrisma();
+  const { storeConfig, address, distanceM, lineItems, totals, requiresRx, couponRow, cart } = ctx;
 
   // 6) COD gates (§10.3) then velocity rule (§10.3).
   await assertCodAllowed(userId, totals.totalPaise, storeConfig.codLimitPaise);
@@ -470,6 +512,177 @@ export async function createOrder(userId: string, body: CreateOrderInput): Promi
   });
 
   return { order: detail };
+}
+
+/**
+ * PREPAID checkout (phase-2 brief §1). Reserves stock at create (same §9.4
+ * conditional UPDATE as COD), creates a Razorpay order + a Payment row, and
+ * lands the order at PENDING_PAYMENT (paymentStatus PENDING, not yet placed),
+ * then enqueues the 15-min payment-timeout. The order stays invisible to ops
+ * until the `payment.captured` webhook promotes it — so NO order:new emit here.
+ * Returns the Razorpay checkout handoff for the client sheet.
+ */
+async function createPrepaidOrder(userId: string, ctx: CheckoutContext): Promise<CreateOrderResult> {
+  const prisma = getPrisma();
+  const { address, distanceM, lineItems, totals, requiresRx, couponRow, cart } = ctx;
+
+  // Velocity rule (§10.3) — applies to every checkout, prepaid included.
+  await assertVelocity(userId);
+
+  // Razorpay order created BEFORE the tx (external, §14). Keeping the DB mutation
+  // one atomic tx preserves idempotency: a reservation failure rolls everything
+  // back and a retry is safe; the orphaned Razorpay order simply expires unpaid.
+  const receipt = `rcpt_${randomUUID().replace(/-/g, "").slice(0, 34)}`;
+  const rzp = await createRazorpayOrder(totals.totalPaise, receipt);
+
+  const orderId = await prisma.$transaction(
+    async (tx) => {
+      await reserveStockOrThrow(tx, lineItems);
+
+      const user = await tx.user.findUniqueOrThrow({
+        where: { id: userId },
+        select: { name: true, phone: true },
+      });
+      const addressSnapshot: AddressSnapshot = {
+        name: user.name ?? "",
+        phone: user.phone,
+        label: address.label,
+        line1: address.line1,
+        line2: address.line2,
+        landmark: address.landmark,
+        pincode: address.pincode,
+        lat: address.lat,
+        lng: address.lng,
+      };
+
+      const created = await tx.order.create({
+        data: {
+          orderNo: `TMP-${randomUUID()}`,
+          userId,
+          status: OrderStatus.PENDING_PAYMENT,
+          paymentMethod: PaymentMethod.PREPAID,
+          paymentStatus: PaymentStatus.PENDING,
+          addressSnapshot: addressSnapshot as unknown as Prisma.InputJsonValue,
+          distanceM,
+          itemsPaise: totals.itemsPaise,
+          deliveryPaise: totals.deliveryPaise,
+          discountPaise: totals.discountPaise,
+          totalPaise: totals.totalPaise,
+          couponCode: couponRow ? couponRow.code : null,
+          requiresRx,
+          rxStatus: requiresRx ? RxStatus.PENDING : RxStatus.NA,
+          // placedAt stays null until payment.captured promotes the order.
+          items: {
+            create: lineItems.map((li) => ({
+              productId: li.product.id,
+              nameSnap: li.product.name,
+              packSizeSnap: li.product.packSize,
+              pricePaise: li.product.pricePaise,
+              mrpPaise: li.product.mrpPaise,
+              gstRatePct: li.product.gstRatePct,
+              hsnSnap: li.product.hsnCode,
+              requiresRx: li.product.requiresRx,
+              qty: li.qty,
+            })),
+          },
+        },
+        select: { id: true, seq: true, createdAt: true },
+      });
+
+      await tx.order.update({
+        where: { id: created.id },
+        data: { orderNo: makeOrderNo(created.seq, created.createdAt) },
+      });
+
+      // Payment row — the rzpOrderId links the webhook back to this order.
+      await tx.payment.create({
+        data: { orderId: created.id, rzpOrderId: rzp.id, amountPaise: totals.totalPaise },
+      });
+
+      await tx.stockAdjustment.createMany({
+        data: lineItems.map((li) => ({
+          productId: li.product.id,
+          delta: -li.qty,
+          reason: AdjustReason.SALE,
+          refOrderId: created.id,
+          actorId: userId,
+        })),
+      });
+
+      // Clear the cart (§9.4) — the order snapshot is now the source of truth.
+      await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
+
+      // Exactly one OrderEvent for the create transition (null → PENDING_PAYMENT).
+      await tx.orderEvent.create({
+        data: {
+          orderId: created.id,
+          from: null,
+          to: OrderStatus.PENDING_PAYMENT,
+          actorType: ActorType.CUSTOMER,
+          actorId: userId,
+        },
+      });
+
+      if (couponRow) {
+        await assertCouponRedeemableInTx(tx, couponRow, userId);
+        await tx.couponRedemption.create({
+          data: { couponId: couponRow.id, userId, orderId: created.id },
+        });
+      }
+
+      return created.id;
+    },
+    { timeout: 15_000, maxWait: 10_000 },
+  );
+
+  // Best-effort AFTER commit (§9.3): a miss is covered by the watchdog + job.
+  await enqueuePaymentTimeout(orderId).catch((err) =>
+    logger.warn({ err, orderId }, "payment-timeout enqueue failed (best-effort)"),
+  );
+
+  const detail = await loadOrderDetail(orderId, userId);
+  return {
+    order: detail,
+    razorpay: {
+      rzpOrderId: rzp.id,
+      rzpKeyId: razorpayKeyId(),
+      amountPaise: totals.totalPaise,
+      currency: "INR",
+    },
+  };
+}
+
+/**
+ * Conditional stock reservation (§9.4) inside the caller's tx — one guarded
+ * `UPDATE … WHERE stockQty >= qty` per line; any miss throws STOCK_INSUFFICIENT
+ * with live availability, rolling back every reservation made in the tx.
+ */
+async function reserveStockOrThrow(
+  tx: Prisma.TransactionClient,
+  lineItems: { product: Product; qty: number }[],
+): Promise<void> {
+  const shortages: { productId: string; requestedQty: number }[] = [];
+  for (const li of lineItems) {
+    const affected = await tx.$executeRaw`
+      UPDATE "Product" SET "stockQty" = "stockQty" - ${li.qty}
+      WHERE "id" = ${li.product.id} AND "stockQty" >= ${li.qty}
+    `;
+    if (affected !== 1) shortages.push({ productId: li.product.id, requestedQty: li.qty });
+  }
+  if (shortages.length > 0) {
+    const fresh = await tx.product.findMany({
+      where: { id: { in: shortages.map((s) => s.productId) } },
+      select: { id: true, stockQty: true },
+    });
+    const stockById = new Map(fresh.map((p) => [p.id, p.stockQty]));
+    throw new AppError("STOCK_INSUFFICIENT", "Some items are no longer in stock", 409, {
+      items: shortages.map((s) => ({
+        productId: s.productId,
+        requestedQty: s.requestedQty,
+        availableQty: stockById.get(s.productId) ?? 0,
+      })),
+    });
+  }
 }
 
 /** Fields the create route hands the service (from `CreateOrderBodySchema`). */
@@ -751,6 +964,9 @@ export async function cancelOrder(
     });
 
     emitOrderStatus({ id, status: OrderStatus.CANCELLED });
+    // Refund a paid PREPAID order (external, post-commit, §14). No-op for COD and
+    // for still-unpaid PENDING_PAYMENT orders (initiateRefund guards on PAID).
+    await initiateRefund(id);
     return { outcome: CancelOrderOutcome.CANCELLED, order: await loadOrder(id, userId) };
   }
 

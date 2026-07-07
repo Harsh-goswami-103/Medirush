@@ -1,7 +1,9 @@
 import Fastify, { type FastifyBaseLogger } from "fastify";
 import helmet from "@fastify/helmet";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
+import { RX_MAX_UPLOAD_BYTES } from "@medrush/contracts";
 import {
   serializerCompiler,
   validatorCompiler,
@@ -57,6 +59,12 @@ export async function buildApp() {
     global: true,
     max: 100,
     timeWindow: 60_000, // 100 req/min per client
+  });
+
+  // Prescription uploads (§7.2): single file, hard-capped at 5MB; the route
+  // magic-byte validates + re-encodes. Larger parts are rejected mid-stream.
+  await app.register(multipart, {
+    limits: { fileSize: RX_MAX_UPLOAD_BYTES, files: 1, fields: 10 },
   });
 
   await app.register(requestIdPlugin);

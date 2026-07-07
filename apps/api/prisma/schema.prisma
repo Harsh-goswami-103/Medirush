@@ -415,6 +415,11 @@ model IdempotencyKey {                             // client POST /orders dedupe
   createdAt DateTime @default(now())
 }
 
+model InvoiceCounter {                             // FY-sequential GST invoice numbers (§9.7)
+  fy   String @id      // "25-26"
+  next Int    @default(1)
+}
+
 model Coupon {
   id           String   @id @default(cuid())
   code         String   @unique

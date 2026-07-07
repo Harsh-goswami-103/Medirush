@@ -155,17 +155,24 @@ describe("POST /v1/orders (COD checkout)", () => {
     expect(events[0]?.to).toBe("RX_REVIEW");
   });
 
-  it("PREPAID → 422 VALIDATION_ERROR (Phase 2)", async () => {
+  it("PREPAID → PENDING_PAYMENT with a razorpay handoff and reserved stock (Phase 2)", async () => {
     const { customer, headers, addressId } = await seedCustomer();
     const p = await product({ stock: 10, pricePaise: 12000 });
     await setCartItem(customer.id, p.id, 1);
 
     const res = await postOrder(headers, { addressId, paymentMethod: "PREPAID" });
-    expect(res.statusCode).toBe(422);
-    expect(res.json().error.code).toBe("VALIDATION_ERROR");
-    // No order, no stock movement.
-    expect(await prisma.order.count()).toBe(0);
-    expect((await prisma.product.findUniqueOrThrow({ where: { id: p.id } })).stockQty).toBe(10);
+    expect(res.statusCode, res.body).toBe(201);
+
+    const { order, razorpay } = res.json().data;
+    expect(order.status).toBe("PENDING_PAYMENT");
+    expect(order.paymentStatus).toBe("PENDING");
+    expect(razorpay.rzpOrderId).toMatch(/^order_/);
+    expect(razorpay.amountPaise).toBe(order.totalPaise);
+
+    // Stock reserved at create for PREPAID too (§9.4); a Payment row is written.
+    expect(await prisma.order.count()).toBe(1);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: p.id } })).stockQty).toBe(9);
+    expect(await prisma.payment.count()).toBe(1);
   });
 
   it("below the store minimum → 422 MIN_ORDER_NOT_MET without touching stock", async () => {

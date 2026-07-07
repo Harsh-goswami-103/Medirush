@@ -2,6 +2,8 @@ import PgBoss from "pg-boss";
 import { getConfig } from "./config";
 import { logger } from "./logger";
 import { runStuckOrderScan } from "../jobs/stuckOrders";
+import { registerInvoicePdf } from "../jobs/invoicePdf";
+import { registerPaymentTimeout } from "../jobs/paymentTimeout";
 
 /**
  * pg-boss wiring: instance + lifecycle + Phase 1 cron registration.
@@ -43,6 +45,11 @@ export async function registerCronJobs(instance: PgBoss): Promise<void> {
 
   await instance.schedule(STUCK_ORDERS_QUEUE, WATCHDOG_CRON, {}, { tz: WATCHDOG_TZ });
   logger.info({ cron: WATCHDOG_CRON, tz: WATCHDOG_TZ }, "stuck-order watchdog scheduled");
+
+  // Phase 2 workers: PREPAID payment-timeout auto-cancel + post-delivery invoice.
+  await registerPaymentTimeout(instance);
+  await registerInvoicePdf(instance);
+  logger.info("payment-timeout + invoice-pdf workers registered");
 }
 
 export async function startJobs(): Promise<void> {
