@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-surface-2 text-ink-900 antialiased;
+  font-feature-settings: "cv11", "ss01";
+}
+
+/* Dense, keyboard-friendly tables read better with a tighter default (§20.4 ops). */
+table {
+  border-collapse: collapse;
+}
