@@ -2,7 +2,7 @@
  * Prisma enums mirrored as const objects + zod schemas (BLUEPRINT §6.2).
  *
  * This package is consumed by browser/native clients, so it must NEVER import
- * `@prisma/client`. `apps/api` owns the Prisma schema; these mirrors are the
+ * `@prisma/client`. `backend/api` owns the Prisma schema; these mirrors are the
  * wire contract. Keep both in lock-step — any drift is a breaking change.
  */
 import { z } from "zod";

@@ -183,44 +183,45 @@ Fallback (socket down): GET /v1/orders/:id/track polling every 10s
 
 ```
 medrush/
-├── apps/
-│   ├── api/                    # Fastify + Prisma + Socket.io + pg-boss
-│   │   ├── prisma/
-│   │   │   ├── schema.prisma
-│   │   │   ├── migrations/
-│   │   │   └── seed.ts
-│   │   └── src/
-│   │       ├── core/           # cross-cutting: db.ts, socket.ts, jobs.ts,
-│   │       │                   # storage.ts(R2), maps.ts, fcm.ts, razorpay.ts,
-│   │       │                   # config.ts(env-validated), logger.ts, errors.ts
-│   │       ├── plugins/        # authGuard, rbac, rateLimit, requestId, swagger
-│   │       ├── modules/        # one folder per bounded context
-│   │       │   ├── auth/       #   each = routes.ts + service.ts + (queries.ts)
-│   │       │   ├── catalog/
-│   │       │   ├── cart/
-│   │       │   ├── orders/     # + stateMachine.ts (pure, unit-tested)
-│   │       │   ├── payments/   # + webhook.ts
-│   │       │   ├── prescriptions/
-│   │       │   ├── dispatch/   # offer waves, assignment
-│   │       │   ├── drivers/
-│   │       │   ├── wallet/     # ledger.ts (pure invariants)
-│   │       │   ├── inventory/  # batches, FEFO, adjustments
-│   │       │   ├── notifications/
-│   │       │   └── admin/      # reports, settings, payouts
-│   │       ├── jobs/           # handlers: paymentTimeout, offerExpiry,
-│   │       │                   # noDriverAlert, nightlyBackup, expiryScan
-│   │       └── server.ts
-│   ├── web/                    # Customer PWA (Next.js App Router)
-│   │   └── src/app/ (routes: /, /c/[category], /p/[slug], /cart,
-│   │        /checkout, /orders, /orders/[id]/track, /account, /rx-upload)
-│   ├── ops/                    # Ops + Admin (Next.js, role-gated)
+├── backend/                    # server-side (deployed to Railway)
+│   └── api/                    # Fastify + Prisma + Socket.io + pg-boss
+│       ├── prisma/
+│       │   ├── schema.prisma
+│       │   ├── migrations/
+│       │   └── seed.ts
+│       └── src/
+│           ├── core/           # cross-cutting: db.ts, socket.ts, jobs.ts,
+│           │                   # storage.ts(R2), maps.ts, fcm.ts, razorpay.ts,
+│           │                   # config.ts(env-validated), logger.ts, errors.ts
+│           ├── plugins/        # authGuard, rbac, rateLimit, requestId, swagger
+│           ├── modules/        # one folder per bounded context
+│           │   ├── auth/       #   each = routes.ts + service.ts + (queries.ts)
+│           │   ├── catalog/
+│           │   ├── cart/
+│           │   ├── orders/     # + stateMachine.ts (pure, unit-tested)
+│           │   ├── payments/   # + webhook.ts
+│           │   ├── prescriptions/
+│           │   ├── dispatch/   # offer waves, assignment
+│           │   ├── drivers/
+│           │   ├── wallet/     # ledger.ts (pure invariants)
+│           │   ├── inventory/  # batches, FEFO, adjustments
+│           │   ├── notifications/
+│           │   └── admin/      # reports, settings, payouts
+│           ├── jobs/           # handlers: paymentTimeout, offerExpiry,
+│           │                   # noDriverAlert, nightlyBackup, expiryScan
+│           └── server.ts
+├── frontend/                   # every client app (deployed to Vercel / EAS)
+│   ├── ops/                    # Ops + Admin (Next.js, role-gated) — Phase 3
 │   │   └── src/app/ (routes: /orders, /orders/[id], /rx-queue, /packing,
 │   │        /products, /batches, /stock, /admin/{dashboard,drivers,
 │   │        payouts,coupons,users,reports,settings})
-│   └── driver/                 # Expo app (expo-router)
+│   ├── web/                    # Customer PWA (Next.js App Router) — Phase 4
+│   │   └── src/app/ (routes: /, /c/[category], /p/[slug], /cart,
+│   │        /checkout, /orders, /orders/[id]/track, /account, /rx-upload)
+│   └── driver/                 # Expo app (expo-router) — Phase 5
 │       └── app/ (login, home[online-toggle], offer/[id], active/[id],
 │            wallet, payouts, history, profile)
-├── packages/
+├── packages/                   # shared by backend + frontend
 │   ├── contracts/              # ★ SINGLE SOURCE OF TRUTH
 │   │   └── src/ (enums.ts, schemas/{auth,catalog,cart,order,driver,
 │   │        wallet,inventory,admin}.ts, socket-events.ts, errors.ts)
@@ -1215,7 +1216,7 @@ Contrast ≥4.5:1 (teal-on-white verified), visible focus rings, labeled inputs,
 git clone … && cd medrush
 nvm use && corepack enable && pnpm i
 docker compose -f docker-compose.dev.yml up -d      # postgres:16
-cp .env.example apps/api/.env                        # fill Firebase/Razorpay TEST keys
+cp .env.example backend/api/.env                     # fill Firebase/Razorpay TEST keys
 pnpm db:migrate && pnpm db:seed                      # demo catalog, store cfg, admin/driver users
 pnpm dev                                             # turbo: api :4000, web :3000, ops :3001
 pnpm dev:driver                                      # expo start (Expo Go / dev build)
@@ -1343,11 +1344,11 @@ Post-launch backlog (v1.1, priority order): WhatsApp notifications → refill re
 
 # 26. Appendix A — Environment Variables
 
-**apps/api** `DATABASE_URL` · `PORT` · `NODE_ENV` · `FIREBASE_PROJECT_ID` · `FIREBASE_CLIENT_EMAIL` · `FIREBASE_PRIVATE_KEY` · `RAZORPAY_KEY_ID` · `RAZORPAY_KEY_SECRET` · `RAZORPAY_WEBHOOK_SECRET` · `R2_ACCOUNT_ID` · `R2_ACCESS_KEY_ID` · `R2_SECRET_ACCESS_KEY` · `R2_PUBLIC_BUCKET` · `R2_PRIVATE_BUCKET` · `R2_PUBLIC_CDN_URL` · `OLA_MAPS_API_KEY` · `SENTRY_DSN` · `REVALIDATE_SECRET` · `BACKUP_GPG_PASSPHRASE` · `WEB_ORIGIN` · `OPS_ORIGIN` · `RESEND_API_KEY?`
+**backend/api** `DATABASE_URL` · `PORT` · `NODE_ENV` · `FIREBASE_PROJECT_ID` · `FIREBASE_CLIENT_EMAIL` · `FIREBASE_PRIVATE_KEY` · `RAZORPAY_KEY_ID` · `RAZORPAY_KEY_SECRET` · `RAZORPAY_WEBHOOK_SECRET` · `R2_ACCOUNT_ID` · `R2_ACCESS_KEY_ID` · `R2_SECRET_ACCESS_KEY` · `R2_PUBLIC_BUCKET` · `R2_PRIVATE_BUCKET` · `R2_PUBLIC_CDN_URL` · `OLA_MAPS_API_KEY` · `SENTRY_DSN` · `REVALIDATE_SECRET` · `BACKUP_GPG_PASSPHRASE` · `WEB_ORIGIN` · `OPS_ORIGIN` · `RESEND_API_KEY?`
 
-**apps/web & apps/ops** `NEXT_PUBLIC_API_URL` · `NEXT_PUBLIC_FIREBASE_*` (apiKey, authDomain, projectId, appId, messagingSenderId) · `NEXT_PUBLIC_RAZORPAY_KEY_ID` (web only) · `NEXT_PUBLIC_OLA_MAPS_KEY` · `NEXT_PUBLIC_SENTRY_DSN` · `REVALIDATE_SECRET` (web server-side)
+**frontend/web & frontend/ops** `NEXT_PUBLIC_API_URL` · `NEXT_PUBLIC_FIREBASE_*` (apiKey, authDomain, projectId, appId, messagingSenderId) · `NEXT_PUBLIC_RAZORPAY_KEY_ID` (web only) · `NEXT_PUBLIC_OLA_MAPS_KEY` · `NEXT_PUBLIC_SENTRY_DSN` · `REVALIDATE_SECRET` (web server-side)
 
-**apps/driver (EAS secrets)** `EXPO_PUBLIC_API_URL` · `EXPO_PUBLIC_FIREBASE_*` · `SENTRY_DSN` · `GOOGLE_SERVICES_JSON` (FCM)
+**frontend/driver (EAS secrets)** `EXPO_PUBLIC_API_URL` · `EXPO_PUBLIC_FIREBASE_*` · `SENTRY_DSN` · `GOOGLE_SERVICES_JSON` (FCM)
 
 ---
 

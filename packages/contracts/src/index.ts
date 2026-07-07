@@ -1,7 +1,7 @@
 /**
  * @medrush/contracts — single source of truth for the MedRush platform.
  *
- * Consumed by `apps/api` (Fastify + fastify-type-provider-zod) and all three
+ * Consumed by `backend/api` (Fastify + fastify-type-provider-zod) and all three
  * clients (customer PWA, driver app, ops/admin panel). Apps import ONLY from
  * this root barrel.
  *

@@ -10,7 +10,7 @@ mechanical decisions so independently-built packages compose. Do not deviate.
 | `packages/contracts` | `@medrush/contracts` | ★ single source of truth: enums, Zod schemas, socket events, error codes |
 | `packages/config` | `@medrush/config` | eslint flat preset, prettier config, tsconfig bases, tailwind preset |
 | `packages/ui` | `@medrush/ui` | shared web components (Phase 3+; stub now) |
-| `apps/api` | `@medrush/api` | Fastify 5 + Prisma 6 + Socket.io + pg-boss (private) |
+| `backend/api` | `@medrush/api` | Fastify 5 + Prisma 6 + Socket.io + pg-boss (private) |
 
 Workspace deps use `"workspace:*"`.
 
@@ -40,7 +40,7 @@ Zod v4 note: import as `import { z } from "zod"` (v4 API: `z.iso.datetime()`, `z
 ## Scripts contract (every package defines what applies)
 
 `build` (tsup) · `dev` · `typecheck` (`tsc --noEmit`) · `lint` (`eslint .`) · `test` (`vitest run`).
-apps/api additionally: `db:migrate` (`prisma migrate dev`), `db:deploy`, `db:seed` (`tsx prisma/seed.ts`), `db:studio`.
+backend/api additionally: `db:migrate` (`prisma migrate dev`), `db:deploy`, `db:seed` (`tsx prisma/seed.ts`), `db:studio`.
 
 ## Domain conventions (from BLUEPRINT §6–§7 — verbatim rules)
 
@@ -59,7 +59,7 @@ apps/api additionally: `db:migrate` (`prisma migrate dev`), `db:deploy`, `db:see
 - Prisma enums are mirrored in `contracts/src/enums.ts` as `const` objects + `z.enum`
   (contracts must NOT import from @prisma/client — it is the client-facing package).
 
-## API skeleton conventions (apps/api)
+## API skeleton conventions (backend/api)
 
 - `src/core/config.ts`: Zod-parsed `process.env` (§26 keys). In `development`/`test`,
   third-party keys optional; in `production` all required — boot fails loudly.

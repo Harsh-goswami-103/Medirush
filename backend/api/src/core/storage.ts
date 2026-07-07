@@ -11,7 +11,7 @@ import { getConfig, type Config } from "./config";
  * - REAL R2 when `R2_ACCOUNT_ID` + `R2_ACCESS_KEY_ID` + `R2_SECRET_ACCESS_KEY`
  *   are all set: an S3-compatible client against `https://<account>.r2.
  *   cloudflarestorage.com`, bucket `config.R2_PRIVATE_BUCKET`, region "auto".
- * - STUB otherwise: bytes are written under `apps/api/.storage/private/<key>`
+ * - STUB otherwise: bytes are written under `backend/api/.storage/private/<key>`
  *   (gitignored) and `presignPrivateGet` returns a syntactically valid,
  *   never-dereferenced URL `https://r2.local.invalid/private/<key>?stub=1&exp=<ts>`.
  *
@@ -23,7 +23,7 @@ import { getConfig, type Config } from "./config";
  *   presignPrivateGet(key, ttlSec): Promise<string>   // z.url()-valid
  */
 
-/** `apps/api/.storage/private` — resolved from this module (src/core/storage.ts). */
+/** `backend/api/.storage/private` — resolved from this module (src/core/storage.ts). */
 const STUB_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".storage", "private");
 /** Never resolvable — the stub URL is only ever inspected, not fetched. */
 const STUB_HOST = "https://r2.local.invalid";

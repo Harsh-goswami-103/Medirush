@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 /**
  * Prescription upload (BLUEPRINT §7.2, §10.1, §13; phase-2 brief §5). Real
- * Postgres, R2 in STUB mode (bytes land under apps/api/.storage/private).
+ * Postgres, R2 in STUB mode (bytes land under backend/api/.storage/private).
  * Covers: valid image → PENDING + stored; oversize → 422; spoofed content → 422;
  * foreign order → 404; non-Rx order → 422.
  */
@@ -37,7 +37,7 @@ const REAL_PNG = Buffer.from(
   "base64",
 );
 
-/** apps/api/.storage/private — the R2 stub root (resolved from this test file). */
+/** backend/api/.storage/private — the R2 stub root (resolved from this test file). */
 const STORAGE_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "..", ".storage", "private");
 
 let orderSeq = 0;

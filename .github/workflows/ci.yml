@@ -34,13 +34,13 @@ jobs:
           cache: pnpm
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      - name: Prisma generate (apps/api)
+      - name: Prisma generate (backend/api)
         # pnpm workspaces skip @prisma/client's postinstall generation (no schema
         # at the install cwd) — without this, typecheck sees the stub client.
         run: pnpm --filter @medrush/api exec prisma generate
       - name: Lint + typecheck (turbo)
         run: pnpm turbo run lint typecheck
-      - name: Prisma validate (apps/api)
+      - name: Prisma validate (backend/api)
         # Schema parse only — no DB connection; dummy URL satisfies env("DATABASE_URL").
         run: pnpm --filter @medrush/api exec prisma validate
         env:
@@ -89,7 +89,7 @@ jobs:
           cache: pnpm
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      - name: Prisma generate (apps/api)
+      - name: Prisma generate (backend/api)
         run: pnpm --filter @medrush/api exec prisma generate
       - name: Apply migrations
         run: pnpm --filter @medrush/api exec prisma migrate deploy
@@ -110,7 +110,7 @@ jobs:
           cache: pnpm
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      - name: Prisma generate (apps/api)
+      - name: Prisma generate (backend/api)
         run: pnpm --filter @medrush/api exec prisma generate
       - name: Build (turbo) # api, web, ops — driver app is built by EAS, not CI (§22.1)
         run: pnpm turbo run build
