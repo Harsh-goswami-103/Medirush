@@ -15,20 +15,18 @@ interface NavItem {
 
 const OPS_NAV: NavItem[] = [
   { label: "Orders", href: "/orders" },
-  { label: "Rx queue", soon: true },
-  { label: "Products", soon: true },
-  { label: "Batches", soon: true },
-  { label: "Stock", soon: true },
+  { label: "Products", href: "/products" },
+  { label: "Stock", href: "/stock" },
 ];
 
 const ADMIN_NAV: NavItem[] = [
-  { label: "Dashboard", soon: true },
-  { label: "Drivers", soon: true },
-  { label: "Payouts", soon: true },
-  { label: "Coupons", soon: true },
-  { label: "Users", soon: true },
-  { label: "Reports", soon: true },
-  { label: "Settings", soon: true },
+  { label: "Dashboard", href: "/admin/dashboard" },
+  { label: "Drivers", href: "/admin/drivers" },
+  { label: "Payouts", href: "/admin/payouts" },
+  { label: "Coupons", href: "/admin/coupons" },
+  { label: "Users", href: "/admin/users" },
+  { label: "Reports", href: "/admin/reports" },
+  { label: "Settings", href: "/admin/settings" },
 ];
 
 function NavGroup({ title, items, pathname }: { title: string; items: NavItem[]; pathname: string }) {

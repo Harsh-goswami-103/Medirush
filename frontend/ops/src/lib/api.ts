@@ -83,6 +83,27 @@ export function qs(params: Record<string, string | number | boolean | undefined 
   return "?" + entries.map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join("&");
 }
 
+/**
+ * Fetch an authenticated file (e.g. a report `format=csv`) and trigger a browser
+ * download — the endpoints require the bearer header, so a plain link won't do.
+ */
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    headers: authToken ? { authorization: `Bearer ${authToken}` } : {},
+    cache: "no-store",
+  });
+  if (!res.ok) throw new ApiError("INTERNAL", `Download failed (${res.status})`, res.status);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export const api = {
   get: <T>(path: string, opts?: RequestOptions) => request<T>(path, { ...opts, method: "GET" }),
   post: <T>(path: string, body?: unknown, opts?: RequestOptions) =>

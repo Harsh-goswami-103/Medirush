@@ -2,11 +2,14 @@
 
 import { AuthProvider } from "@/lib/auth";
 import { QueryProvider } from "@/lib/query";
+import { ToastProvider } from "@/components/toast";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <QueryProvider>
-      <AuthProvider>{children}</AuthProvider>
+      <AuthProvider>
+        <ToastProvider>{children}</ToastProvider>
+      </AuthProvider>
     </QueryProvider>
   );
 }

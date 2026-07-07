@@ -11,7 +11,6 @@ import {
   Badge,
   Button,
   Card,
-  EmptyState,
   ErrorState,
   OrderStatusBadge,
   RxBadge,
