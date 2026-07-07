@@ -32,5 +32,14 @@ export function useCart() {
   const itemCount = cart?.items.reduce((n, i) => n + i.qty, 0) ?? 0;
   const qtyOf = (productId: string) => cart?.items.find((i) => i.productId === productId)?.qty ?? 0;
 
-  return { cart, isLoading: query.isLoading, setItem, itemCount, qtyOf };
+  return {
+    cart,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    error: query.error,
+    refetch: query.refetch,
+    setItem,
+    itemCount,
+    qtyOf,
+  };
 }

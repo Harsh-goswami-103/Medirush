@@ -28,6 +28,8 @@ interface AuthState {
   loading: boolean;
   /** Sync-or-create the account for a verified identity, then load /v1/me. */
   devLogin: (firebaseUid: string, phone: string, name?: string) => Promise<AuthUser>;
+  /** Re-fetch /v1/me into context (call after a profile PATCH). */
+  refreshUser: () => Promise<void>;
   logout: () => void;
 }
 
@@ -72,6 +74,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [loadMe],
   );
 
+  const refreshUser = useCallback(async () => {
+    try {
+      const { data } = await api.get<AuthUser>("/v1/me");
+      setUser(data);
+    } catch {
+      // Keep the current user on a transient failure.
+    }
+  }, []);
+
   const logout = useCallback(() => {
     setAuthToken(null);
     setUser(null);
@@ -80,7 +91,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, devLogin, logout }}>
+    <AuthContext.Provider value={{ user, token, loading, devLogin, refreshUser, logout }}>
       {children}
     </AuthContext.Provider>
   );
