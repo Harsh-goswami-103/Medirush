@@ -125,8 +125,12 @@ Integration tests via `test/helpers/{db,factories,auth}`. Required coverage:
 - **admin-fleet:** driver verify flips isVerified + audit; block user → isBlocked + cache bust;
   set-role changes PG role; **payout approve debits wallet (ledger invariant holds), balance <
   amount → 409, reject after approve compensating-credits, mark-paid records UTR**; double-approve → 409.
-- **admin-marketing:** coupon create (PERCENT>100 → 422 via contract, endsAt≤startsAt → 422), update,
-  deactivate, list; settings GET returns store+flags; PUT partial updates + busts caches + audit.
+- **admin-marketing:** coupon create — the frozen `CreateCouponBodySchema.superRefine` rejects
+  PERCENT>100 and endsAt≤startsAt at request validation, so the API returns **400 VALIDATION_ERROR**
+  (the codebase hard-maps all schema-validation failures to 400 — §7.1; same as rx-review's
+  missing-note). The service re-checks the same two invariants on **PATCH** (partial body drops the
+  superRefine) and throws **422** there. Also: update, deactivate, list; settings GET returns
+  store+flags; PUT partial updates + busts caches + audit.
 
 ## Notes for agents
 
