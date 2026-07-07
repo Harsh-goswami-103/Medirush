@@ -10,6 +10,7 @@ import {
 import { getConfig } from "./core/config";
 import { logger } from "./core/logger";
 import { AppError, errorHandler, notFoundHandler } from "./core/errors";
+import { appVersionPlugin } from "./plugins/appVersion";
 import { authPlugin } from "./plugins/auth";
 import { genReqId, requestIdPlugin } from "./plugins/requestId";
 import { swaggerPlugin } from "./plugins/swagger";
@@ -59,6 +60,8 @@ export async function buildApp() {
   });
 
   await app.register(requestIdPlugin);
+  // Before auth: outdated driver apps get 426 (blocking update screen), not 401.
+  await app.register(appVersionPlugin);
   await app.register(authPlugin);
   await app.register(swaggerPlugin);
 

@@ -160,6 +160,11 @@ export const OpsOrderDetailSchema = OrderSchema.omit({
   events: z.array(OrderEventSchema),
   /** Null until a driver accepts. */
   delivery: OpsDeliveryInfoSchema.nullable(),
+  /**
+   * True when the customer requested cancellation of a PACKING/READY order
+   * (§18.3) — derived from the order events; ops must approve/deny.
+   */
+  cancelRequested: z.boolean(),
 });
 export type OpsOrderDetail = z.infer<typeof OpsOrderDetailSchema>;
 export const GetOpsOrderResponseSchema = envelope(OpsOrderDetailSchema);

@@ -91,15 +91,29 @@ export const CartIssueSchema = z.object({
 });
 export type CartIssue = z.infer<typeof CartIssueSchema>;
 
+/** Checkout-preview totals returned alongside a cart validation (§9.2 pricing). */
+export const CartTotalsSchema = z.object({
+  itemsPaise: PaiseSchema,
+  /** Delivery fee after the free-delivery threshold — 0 when items ≥ threshold. */
+  deliveryPaise: PaiseSchema,
+  /** `itemsPaise + deliveryPaise` (coupon discount is applied at order create). */
+  totalPaise: PaiseSchema,
+  minOrderPaise: PaiseSchema,
+  /** True when `itemsPaise ≥ minOrderPaise` — checkout is blocked otherwise. */
+  minOrderMet: z.boolean(),
+});
+export type CartTotals = z.infer<typeof CartTotalsSchema>;
+
 /**
  * POST /v1/cart/validate — no body. Re-checks stock/price/Rx flags and returns
- * the (possibly re-priced) cart. `valid=false` means checkout must not proceed
- * until the customer resolves the listed issues.
+ * the (possibly re-priced) cart plus a checkout-preview of totals. `valid=false`
+ * means checkout must not proceed until the customer resolves the listed issues.
  */
 export const ValidateCartResultSchema = z.object({
   valid: z.boolean(),
   issues: z.array(CartIssueSchema),
   cart: CartSchema,
+  totals: CartTotalsSchema,
 });
 export type ValidateCartResult = z.infer<typeof ValidateCartResultSchema>;
 export const ValidateCartResponseSchema = envelope(ValidateCartResultSchema);

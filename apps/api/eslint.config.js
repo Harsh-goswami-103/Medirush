@@ -18,4 +18,13 @@ export default [
       "no-console": "off",
     },
   },
+  {
+    // Dev/verification scripts (golden-path driver, etc.): console is the output
+    // channel and untyped fetch/JSON bodies make `any` pragmatic.
+    files: ["scripts/**/*.ts"],
+    rules: {
+      "no-console": "off",
+      "@typescript-eslint/no-explicit-any": "off",
+    },
+  },
 ];

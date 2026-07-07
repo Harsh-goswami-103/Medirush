@@ -1,14 +1,30 @@
 import type { FastifyPluginAsync } from "fastify";
+import { authRoutes } from "./auth/routes";
+import { addressRoutes } from "./addresses/routes";
+import { storeRoutes } from "./store/routes";
+import { deviceRoutes } from "./devices/routes";
+import { catalogRoutes } from "./catalog/routes";
+import { cartRoutes } from "./cart/routes";
+import { orderRoutes } from "./orders/routes";
+import { opsOrderRoutes } from "./orders/opsRoutes";
+import { driverRoutes } from "./drivers/routes";
+import { walletRoutes } from "./wallet/routes";
 
 /**
  * /v1 module root — registered with `{ prefix: "/v1" }` in app.ts.
- * Empty in Phase 0; bounded-context modules mount here in Phase 1+, e.g.:
- *
- *   await app.register(authRoutes);                     // POST /v1/auth/sync
- *   await app.register(catalogRoutes);                  // GET  /v1/products…
- *   await app.register(orderRoutes,  { prefix: "/orders" });
- *   await app.register(driverRoutes, { prefix: "/driver" });
+ * Module plugins declare their own full sub-paths (e.g. /auth/sync, /ops/orders/:id).
+ * Ownership: this file is maintained by the integrator; module agents export the
+ * names imported above (see docs/phase-briefs/phase-1-core-api.md).
  */
 export const v1Routes: FastifyPluginAsync = async (app) => {
-  app.log.debug("v1 module root registered (Phase 1+ modules mount here)");
+  await app.register(authRoutes);
+  await app.register(addressRoutes);
+  await app.register(storeRoutes);
+  await app.register(deviceRoutes);
+  await app.register(catalogRoutes);
+  await app.register(cartRoutes);
+  await app.register(orderRoutes);
+  await app.register(opsOrderRoutes);
+  await app.register(driverRoutes);
+  await app.register(walletRoutes);
 };

@@ -1,41 +1,168 @@
 import type { Server as HttpServer } from "node:http";
-import { Server } from "socket.io";
-import type { ClientToServerEvents, ServerToClientEvents } from "@medrush/contracts";
+import { Server, type Socket } from "socket.io";
+import {
+  OPS_ROOM,
+  PhoneSchema,
+  Role,
+  driverRoom,
+  type ClientToServerEvents,
+  type InterServerEvents,
+  type ServerToClientEvents,
+  type SocketData,
+} from "@medrush/contracts";
 import { getConfig } from "./config";
+import { getPrisma } from "./db";
+import { verifyFirebaseToken } from "./firebase";
 import { logger } from "./logger";
 
 /**
- * Socket.io wiring (Phase 0 stub).
- * Typed against the §7.3 contract; room membership + real auth land Phase 1.
+ * Socket.io wiring (§7.3): handshake token verification + authorization-checked
+ * room joins.
+ *
+ * NOTE (integrator): `verifySocketToken` duplicates the token-verification chain
+ * in `plugins/auth.ts` (agent A) because that module's private `verifyToken`
+ * helper is not exported and agent A's files are out of scope for agent C. If
+ * the chain changes, keep both in lock-step (or factor a shared util in a later
+ * phase).
  */
 
-export type MedrushIo = Server<ClientToServerEvents, ServerToClientEvents>;
+export type MedrushIo = Server<
+  ClientToServerEvents,
+  ServerToClientEvents,
+  InterServerEvents,
+  SocketData
+>;
+type MedrushSocket = Socket<
+  ClientToServerEvents,
+  ServerToClientEvents,
+  InterServerEvents,
+  SocketData
+>;
 
 let io: MedrushIo | null = null;
+
+const DEV_TOKEN_PREFIX = "dev:";
+
+/** Verify a handshake token the same way the HTTP auth hook does (§8). */
+async function verifySocketToken(token: string): Promise<{ uid: string; phone: string }> {
+  const config = getConfig();
+
+  if (config.FIREBASE_PROJECT_ID !== undefined) {
+    return verifyFirebaseToken(token);
+  }
+  if (!config.isProduction && token.startsWith(DEV_TOKEN_PREFIX)) {
+    const [, uid, phone] = token.split(":");
+    if (uid && phone && PhoneSchema.safeParse(phone).success) {
+      return { uid, phone };
+    }
+  }
+  throw new Error("UNAUTHENTICATED");
+}
+
+/** Resolve a verified uid to a socket identity, or null when not synced/blocked. */
+async function resolveSocketIdentity(uid: string): Promise<SocketData | null> {
+  const user = await getPrisma().user.findUnique({
+    where: { firebaseUid: uid },
+    select: { id: true, role: true, isBlocked: true, driver: { select: { id: true } } },
+  });
+  if (!user || user.isBlocked) return null;
+  return {
+    userId: user.id,
+    role: user.role,
+    ...(user.driver ? { driverProfileId: user.driver.id } : {}),
+  };
+}
+
+/** May this identity join the requested room? (§7.3 authorization matrix.) */
+async function canJoinRoom(data: SocketData, room: string): Promise<boolean> {
+  const isStaff = data.role === Role.INVENTORY || data.role === Role.ADMIN;
+
+  if (room === OPS_ROOM) return isStaff;
+
+  if (room.startsWith("driver:")) {
+    return data.driverProfileId !== undefined && room === driverRoom(data.driverProfileId);
+  }
+
+  if (room.startsWith("order:")) {
+    if (isStaff) return true;
+    const orderId = room.slice("order:".length);
+    const order = await getPrisma().order.findUnique({
+      where: { id: orderId },
+      select: { userId: true },
+    });
+    return order?.userId === data.userId;
+  }
+
+  return false;
+}
 
 export function attachSocket(httpServer: HttpServer): MedrushIo {
   const config = getConfig();
 
-  io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
-    cors: {
-      origin: [config.WEB_ORIGIN, config.OPS_ORIGIN],
-      credentials: true,
+  io = new Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(
+    httpServer,
+    {
+      cors: {
+        origin: [config.WEB_ORIGIN, config.OPS_ORIGIN],
+        credentials: true,
+      },
     },
-  });
+  );
 
-  // Auth middleware STUB — reads the handshake token, allows everyone.
-  io.use((socket, next) => {
+  // Handshake verification — reject bad tokens with a connect error (§7.3).
+  io.use((socket: MedrushSocket, next) => {
     const raw: unknown = socket.handshake.auth["token"];
-    const token = typeof raw === "string" && raw.length > 0 ? raw : null;
-    socket.data = { ...socket.data, token };
-    // TODO(Phase 1): firebase verifyIdToken(token) → attach { uid, role },
-    // reject with UNAUTHENTICATED on failure, and gate room joins
-    // (order:{id} owner/ops, driver:{id} self, ops role-checked).
-    next();
+    const token = typeof raw === "string" ? raw.trim() : "";
+    if (token.length === 0) {
+      next(new Error("UNAUTHENTICATED"));
+      return;
+    }
+    void (async () => {
+      try {
+        const { uid } = await verifySocketToken(token);
+        const identity = await resolveSocketIdentity(uid);
+        if (!identity) {
+          next(new Error("UNAUTHENTICATED"));
+          return;
+        }
+        socket.data = identity;
+        next();
+      } catch {
+        next(new Error("UNAUTHENTICATED"));
+      }
+    })();
   });
 
-  io.on("connection", (socket) => {
-    logger.debug({ socketId: socket.id }, "socket connected");
+  io.on("connection", (socket: MedrushSocket) => {
+    const { userId, role, driverProfileId } = socket.data;
+    logger.debug({ socketId: socket.id, userId, role }, "socket connected");
+
+    // Auto-join the rooms this identity is unconditionally entitled to.
+    if (role === Role.INVENTORY || role === Role.ADMIN) {
+      void socket.join(OPS_ROOM);
+    }
+    if (role === Role.DRIVER && driverProfileId) {
+      void socket.join(driverRoom(driverProfileId));
+    }
+
+    // Order rooms are per-order and ownership-checked, so they are joined on
+    // demand. `join` is not part of the typed client contract — attach it as a
+    // raw listener and authorize before joining.
+    const raw = socket as unknown as {
+      on(event: string, listener: (room: unknown, ack?: (ok: boolean) => void) => void): void;
+    };
+    raw.on("join", (room: unknown, ack?: (ok: boolean) => void) => {
+      if (typeof room !== "string") {
+        ack?.(false);
+        return;
+      }
+      void (async () => {
+        const allowed = await canJoinRoom(socket.data, room).catch(() => false);
+        if (allowed) await socket.join(room);
+        ack?.(allowed);
+      })();
+    });
+
     socket.on("disconnect", (reason) => {
       logger.debug({ socketId: socket.id, reason }, "socket disconnected");
     });
@@ -52,9 +179,7 @@ export function getIo(): MedrushIo | null {
 /** §11 order: emit server:restarting, then close (clients reconnect to the new instance). */
 export async function closeSocket(): Promise<void> {
   if (!io) return;
-  // "server:restarting" is part of the §11 shutdown contract; cast keeps us
-  // decoupled from whether contracts lists it in ServerToClientEvents yet.
-  (io as unknown as { emit: (event: string) => void }).emit("server:restarting");
+  io.emit("server:restarting");
   await io.close();
   io = null;
   logger.info("socket.io closed");
