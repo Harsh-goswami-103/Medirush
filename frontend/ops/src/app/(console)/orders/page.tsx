@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import type { OpsOrderSummary, OrderStatus } from "@medrush/contracts";
 import { api, qs } from "@/lib/api";
+import { useOpsLiveBoard } from "@/lib/socket";
 import { formatPaise, timeAgo } from "@/lib/format";
 import { Card, EmptyState, ErrorState, OrderStatusBadge, RxBadge, Spinner } from "@/components/ui";
 import { cn } from "@/lib/cn";
@@ -19,11 +20,14 @@ const FILTERS: { label: string; status?: OrderStatus }[] = [
 
 export default function OrdersBoard() {
   const [status, setStatus] = useState<OrderStatus | undefined>("PLACED");
+  const { connected } = useOpsLiveBoard();
 
   const query = useQuery({
     queryKey: ["ops-orders", status ?? "ALL"],
     queryFn: () => api.get<OpsOrderSummary[]>(`/v1/ops/orders${qs({ status, limit: 50 })}`),
-    refetchInterval: 5_000, // live-ish board; socket push is a Phase-3 enhancement
+    // Socket push drives real-time updates; poll is a fallback — slow when the
+    // socket is live, faster while it is reconnecting.
+    refetchInterval: connected ? 30_000 : 5_000,
   });
 
   const orders = query.data?.data ?? [];
@@ -32,7 +36,18 @@ export default function OrdersBoard() {
     <div>
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-semibold text-ink-900">Order board</h1>
-        {query.isFetching && <Spinner className="h-4 w-4 text-ink-400" />}
+        <div className="flex items-center gap-2">
+          <span
+            className={cn(
+              "flex items-center gap-1.5 text-xs",
+              connected ? "text-success" : "text-ink-400",
+            )}
+          >
+            <span className={cn("h-2 w-2 rounded-full", connected ? "bg-success" : "bg-ink-400")} />
+            {connected ? "Live" : "Reconnecting…"}
+          </span>
+          {query.isFetching && <Spinner className="h-4 w-4 text-ink-400" />}
+        </div>
       </div>
 
       <div className="mb-4 flex flex-wrap gap-1.5">

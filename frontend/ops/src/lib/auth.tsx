@@ -27,6 +27,8 @@ export interface AuthUser {
 
 interface AuthState {
   user: AuthUser | null;
+  /** Current bearer token (for the socket handshake); null when signed out. */
+  token: string | null;
   loading: boolean;
   devLogin: (firebaseUid: string, phone: string) => Promise<AuthUser>;
   logout: () => void;
@@ -36,25 +38,28 @@ const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
+  const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const applyToken = useCallback(async (token: string): Promise<AuthUser> => {
-    setAuthToken(token);
-    const { data } = await api.get<AuthUser>("/v1/me", { token });
+  const applyToken = useCallback(async (bearer: string): Promise<AuthUser> => {
+    setAuthToken(bearer);
+    const { data } = await api.get<AuthUser>("/v1/me", { token: bearer });
     setUser(data);
-    if (typeof window !== "undefined") localStorage.setItem(TOKEN_KEY, token);
+    setToken(bearer);
+    if (typeof window !== "undefined") localStorage.setItem(TOKEN_KEY, bearer);
     return data;
   }, []);
 
   useEffect(() => {
-    const token = typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
-    if (!token) {
+    const stored = typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
+    if (!stored) {
       setLoading(false);
       return;
     }
-    applyToken(token)
+    applyToken(stored)
       .catch(() => {
         setAuthToken(null);
+        setToken(null);
         if (typeof window !== "undefined") localStorage.removeItem(TOKEN_KEY);
       })
       .finally(() => setLoading(false));
@@ -68,11 +73,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(() => {
     setAuthToken(null);
     setUser(null);
+    setToken(null);
     if (typeof window !== "undefined") localStorage.removeItem(TOKEN_KEY);
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, devLogin, logout }}>
+    <AuthContext.Provider value={{ user, token, loading, devLogin, logout }}>
       {children}
     </AuthContext.Provider>
   );
