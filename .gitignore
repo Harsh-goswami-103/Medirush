@@ -35,3 +35,8 @@ test-results/
 Thumbs.db
 .vscode/*
 !.vscode/extensions.json
+.idea/
+
+# native build output (Expo prebuild)
+frontend/driver/android/
+frontend/driver/ios/
