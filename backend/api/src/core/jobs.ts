@@ -4,6 +4,7 @@ import { logger } from "./logger";
 import { runStuckOrderScan } from "../jobs/stuckOrders";
 import { registerInvoicePdf } from "../jobs/invoicePdf";
 import { registerPaymentTimeout } from "../jobs/paymentTimeout";
+import { registerOfferExpiry } from "../jobs/offerExpiry";
 
 /**
  * pg-boss wiring: instance + lifecycle + Phase 1 cron registration.
@@ -49,7 +50,9 @@ export async function registerCronJobs(instance: PgBoss): Promise<void> {
   // Phase 2 workers: PREPAID payment-timeout auto-cancel + post-delivery invoice.
   await registerPaymentTimeout(instance);
   await registerInvoicePdf(instance);
-  logger.info("payment-timeout + invoice-pdf workers registered");
+  // Phase 5 worker: dispatch offer-expiry / wave escalation.
+  await registerOfferExpiry(instance);
+  logger.info("payment-timeout + invoice-pdf + offer-expiry workers registered");
 }
 
 export async function startJobs(): Promise<void> {

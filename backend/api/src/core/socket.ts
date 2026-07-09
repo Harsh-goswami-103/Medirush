@@ -2,9 +2,11 @@ import type { Server as HttpServer } from "node:http";
 import { Server, type Socket } from "socket.io";
 import {
   OPS_ROOM,
+  OrderStatus,
   PhoneSchema,
   Role,
   driverRoom,
+  orderRoom,
   type ClientToServerEvents,
   type InterServerEvents,
   type ServerToClientEvents,
@@ -13,6 +15,7 @@ import {
 import { getConfig } from "./config";
 import { getPrisma } from "./db";
 import { verifyFirebaseToken } from "./firebase";
+import { setDriverLocation } from "./locationStore";
 import { logger } from "./logger";
 
 /**
@@ -161,6 +164,30 @@ export function attachSocket(httpServer: HttpServer): MedrushIo {
         if (allowed) await socket.join(room);
         ack?.(allowed);
       })();
+    });
+
+    // Driver location pings (§7.3/§11): held in memory, broadcast to the order
+    // room. Accepted only from a driver who has an active delivery.
+    socket.on("location:update", (payload) => {
+      const driverProfileId = socket.data.driverProfileId;
+      if (!driverProfileId) return;
+      void (async () => {
+        const active = await getPrisma().delivery.findFirst({
+          where: {
+            driverId: driverProfileId,
+            order: { status: { in: [OrderStatus.ASSIGNED, OrderStatus.PICKED_UP] } },
+          },
+          orderBy: { acceptedAt: "desc" },
+          select: { orderId: true },
+        });
+        if (!active) return;
+        const ts = payload.ts ?? new Date().toISOString();
+        setDriverLocation(active.orderId, { lat: payload.lat, lng: payload.lng, ts });
+        // socket.to() broadcasts to the room EXCLUDING the sender.
+        socket
+          .to(orderRoom(active.orderId))
+          .emit("driver:location", { orderId: active.orderId, lat: payload.lat, lng: payload.lng, ts });
+      })().catch((err) => logger.warn({ err }, "location:update handling failed"));
     });
 
     socket.on("disconnect", (reason) => {

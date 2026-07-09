@@ -2,26 +2,41 @@ import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import type { Prisma, StoreConfig } from "@prisma/client";
 import {
+  AcceptOfferResponseSchema,
   ActorType,
   DELIVERY_OTP_MAX_ATTEMPTS,
   DeliverBodySchema,
   DeliverResponseSchema,
+  DriverHistoryQuerySchema,
+  DriverHistoryResponseSchema,
+  DriverLocationBatchBodySchema,
+  DriverLocationBatchResponseSchema,
   GetActiveDeliveryResponseSchema,
   IdParamsSchema,
+  ListOffersResponseSchema,
+  OFFER_EXPIRES_SEC,
+  OfferStatus,
   OrderStatus,
   PaymentMethod,
   PaymentStatus,
   PickedUpResponseSchema,
+  RejectOfferResponseSchema,
   Role,
+  UpdateDriverStatusBodySchema,
+  UpdateDriverStatusResponseSchema,
   type ActiveDelivery,
   type AddressSnapshot,
+  type DriverHistoryEntry,
+  type Offer,
 } from "@medrush/contracts";
 import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
 import { logger } from "../../core/logger";
-import { emitOrderStatus } from "../../core/realtime";
+import { setDriverLocation } from "../../core/locationStore";
+import { emitDriverLocation, emitOrderStatus } from "../../core/realtime";
 import { getStoreConfig } from "../../core/storeInfo";
 import { enqueueInvoicePdf } from "../../jobs/invoicePdf";
+import { acceptOffer, rejectOffer } from "../dispatch/service";
 import { assertTransition } from "../orders/stateMachine";
 import { creditWallet } from "../wallet/ledger";
 
@@ -322,6 +337,225 @@ export const driverRoutes: FastifyPluginAsync = async (app) => {
       return {
         data: { deliveredAt: now.toISOString(), commissionPaise, walletBalancePaise },
       };
+    },
+  );
+
+  /* --------------------------------------------------- Phase 5: dispatch */
+
+  typed.patch(
+    "/driver/status",
+    {
+      config: { roles: DRIVER_ROLES },
+      schema: {
+        tags: ["driver"],
+        summary: "Go online/offline (only a verified driver may go online)",
+        body: UpdateDriverStatusBodySchema,
+        response: { 200: UpdateDriverStatusResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireAuth(request);
+      const prisma = getPrisma();
+      const profile = await prisma.driverProfile.findUnique({
+        where: { userId },
+        select: { id: true, isVerified: true },
+      });
+      if (!profile) throw new AppError("FORBIDDEN", "No driver profile for this user", 403);
+
+      const { isOnline } = request.body;
+      // Defensive: the auth hook already blocks unverified drivers from /driver/*.
+      if (isOnline && !profile.isVerified) {
+        throw new AppError("FORBIDDEN", "Your driver account is not verified yet", 403, {
+          isVerified: false,
+        });
+      }
+      await prisma.driverProfile.update({
+        where: { id: profile.id },
+        data: { isOnline, lastSeenAt: new Date() },
+      });
+      return { data: { isOnline, isVerified: profile.isVerified } };
+    },
+  );
+
+  typed.get(
+    "/driver/offers",
+    {
+      config: { roles: DRIVER_ROLES },
+      schema: {
+        tags: ["driver"],
+        summary: "Currently open offers for this driver (socket is primary; this refreshes)",
+        response: { 200: ListOffersResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireAuth(request);
+      const profile = await requireDriverProfile(userId);
+      const prisma = getPrisma();
+
+      const now = Date.now();
+      const cutoff = new Date(now - OFFER_EXPIRES_SEC * 1000);
+      const offerRows = await prisma.deliveryOffer.findMany({
+        where: { driverId: profile.id, status: OfferStatus.OFFERED, offeredAt: { gt: cutoff } },
+        orderBy: { offeredAt: "desc" },
+      });
+      if (offerRows.length === 0) return { data: [] };
+
+      // DeliveryOffer has no order relation — fetch the orders in one query.
+      const orderIds = [...new Set(offerRows.map((o) => o.orderId))];
+      const orders = await prisma.order.findMany({
+        where: { id: { in: orderIds } },
+        select: { id: true, orderNo: true, distanceM: true, status: true, addressSnapshot: true },
+      });
+      const orderById = new Map(orders.map((o) => [o.id, o]));
+      const store = await getStoreConfig();
+
+      const data: Offer[] = offerRows.flatMap((offer) => {
+        const order = orderById.get(offer.orderId);
+        // Skip offers whose order is no longer READY (already taken / cancelled).
+        if (!order || order.status !== OrderStatus.READY) return [];
+        const snap = order.addressSnapshot as unknown as AddressSnapshot;
+        const expiresAt = new Date(offer.offeredAt.getTime() + OFFER_EXPIRES_SEC * 1000);
+        return [
+          {
+            offerId: offer.id,
+            orderId: offer.orderId,
+            orderNo: order.orderNo,
+            pickup: { lat: store.lat, lng: store.lng, address: store.address },
+            drop: { lat: snap.lat, lng: snap.lng, address: formatDropAddress(snap) },
+            distanceM: order.distanceM,
+            commissionPaise: commissionPaiseFor(store, order.distanceM),
+            wave: offer.wave,
+            expiresInSec: Math.max(0, Math.round((expiresAt.getTime() - now) / 1000)),
+            expiresAt: expiresAt.toISOString(),
+          },
+        ];
+      });
+      return { data };
+    },
+  );
+
+  typed.post(
+    "/driver/offers/:id/accept",
+    {
+      config: { roles: DRIVER_ROLES },
+      schema: {
+        tags: ["driver"],
+        summary: "Accept an offer — atomic first-wins; 409 OFFER_TAKEN when lost",
+        params: IdParamsSchema,
+        response: { 200: AcceptOfferResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireAuth(request);
+      const profile = await requireDriverProfile(userId);
+      const { deliveryId } = await acceptOffer(request.params.id, profile.id);
+      const active = await findActiveDelivery({ id: deliveryId });
+      if (!active) throw new AppError("INTERNAL", "Delivery disappeared after accept", 500);
+      return { data: active };
+    },
+  );
+
+  typed.post(
+    "/driver/offers/:id/reject",
+    {
+      config: { roles: DRIVER_ROLES },
+      schema: {
+        tags: ["driver"],
+        summary: "Reject an offer (escalates to the next wave when none remain)",
+        params: IdParamsSchema,
+        response: { 200: RejectOfferResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireAuth(request);
+      const profile = await requireDriverProfile(userId);
+      await rejectOffer(request.params.id, profile.id);
+      return { data: { ok: true as const } };
+    },
+  );
+
+  typed.post(
+    "/driver/location",
+    {
+      config: { roles: DRIVER_ROLES },
+      schema: {
+        tags: ["driver"],
+        summary: "Location ping batch (HTTP fallback; held in memory, broadcast to the order room)",
+        body: DriverLocationBatchBodySchema,
+        response: { 200: DriverLocationBatchResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireAuth(request);
+      const profile = await requireDriverProfile(userId);
+      const prisma = getPrisma();
+
+      const active = await prisma.delivery.findFirst({
+        where: {
+          driverId: profile.id,
+          order: { status: { in: [OrderStatus.ASSIGNED, OrderStatus.PICKED_UP] } },
+        },
+        orderBy: { acceptedAt: "desc" },
+        select: { orderId: true },
+      });
+      if (!active) throw new AppError("CONFLICT", "No active delivery to report location for", 409);
+
+      const points = request.body.points;
+      const last = points[points.length - 1];
+      if (!last) throw new AppError("VALIDATION_ERROR", "No location points provided", 422);
+
+      setDriverLocation(active.orderId, { lat: last.lat, lng: last.lng, ts: last.ts });
+      await prisma.driverProfile.update({
+        where: { id: profile.id },
+        data: { lastLat: last.lat, lastLng: last.lng, lastSeenAt: new Date() },
+      });
+      emitDriverLocation({ orderId: active.orderId, lat: last.lat, lng: last.lng, ts: last.ts });
+      return { data: { ok: true as const } };
+    },
+  );
+
+  typed.get(
+    "/driver/history",
+    {
+      config: { roles: DRIVER_ROLES },
+      schema: {
+        tags: ["driver"],
+        summary: "A day's completed deliveries + earnings (IST; defaults to today)",
+        querystring: DriverHistoryQuerySchema,
+        response: { 200: DriverHistoryResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireAuth(request);
+      const profile = await requireDriverProfile(userId);
+
+      const dateStr =
+        request.query.date ??
+        new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(new Date());
+      const start = new Date(`${dateStr}T00:00:00.000+05:30`);
+      const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+
+      const rows = await getPrisma().delivery.findMany({
+        where: { driverId: profile.id, deliveredAt: { gte: start, lt: end } },
+        orderBy: { deliveredAt: "desc" },
+        include: { order: { select: { orderNo: true } } },
+      });
+
+      const deliveries: DriverHistoryEntry[] = rows.map((d) => ({
+        deliveryId: d.id,
+        orderId: d.orderId,
+        orderNo: d.order.orderNo,
+        deliveredAt: (d.deliveredAt as Date).toISOString(),
+        distanceM: d.distanceM,
+        commissionPaise: d.commissionPaise ?? 0,
+        codCollectedPaise: d.codCollectedPaise,
+      }));
+      const totals = {
+        count: deliveries.length,
+        commissionPaise: deliveries.reduce((sum, d) => sum + d.commissionPaise, 0),
+        codCollectedPaise: deliveries.reduce((sum, d) => sum + (d.codCollectedPaise ?? 0), 0),
+      };
+      return { data: { date: dateStr, deliveries, totals } };
     },
   );
 };

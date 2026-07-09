@@ -1,5 +1,12 @@
-import type { OrderStatus, PaymentMethod, RxStatus } from "@medrush/contracts";
-import { OPS_ROOM, RxStatus as RxStatusValues, orderRoom } from "@medrush/contracts";
+import type {
+  DriverLocationEvent,
+  OfferCancelledEvent,
+  OfferNewEvent,
+  OrderStatus,
+  PaymentMethod,
+  RxStatus,
+} from "@medrush/contracts";
+import { OPS_ROOM, RxStatus as RxStatusValues, driverRoom, orderRoom } from "@medrush/contracts";
 import { getIo } from "./socket";
 
 /**
@@ -78,4 +85,27 @@ export function emitOpsAlert(kind: string, msg: string, refId?: string): void {
   const io = getIo();
   if (!io) return;
   io.to(OPS_ROOM).emit("alert", { kind, msg, ...(refId !== undefined ? { refId } : {}) });
+}
+
+/* -------------------------------------------------------- dispatch (§9.5) */
+
+/** `offer:new` to one driver's room (paired with an FCM push in prod). */
+export function emitOfferNew(driverProfileId: string, payload: OfferNewEvent): void {
+  const io = getIo();
+  if (!io) return;
+  io.to(driverRoom(driverProfileId)).emit("offer:new", payload);
+}
+
+/** `offer:cancelled` to one driver's room — the offer expired or was taken. */
+export function emitOfferCancelled(driverProfileId: string, payload: OfferCancelledEvent): void {
+  const io = getIo();
+  if (!io) return;
+  io.to(driverRoom(driverProfileId)).emit("offer:cancelled", payload);
+}
+
+/** `driver:location` to an order's room — live position while ASSIGNED/PICKED_UP. */
+export function emitDriverLocation(payload: DriverLocationEvent): void {
+  const io = getIo();
+  if (!io) return;
+  io.to(orderRoom(payload.orderId)).emit("driver:location", payload);
 }

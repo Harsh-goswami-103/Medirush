@@ -36,6 +36,7 @@ import { getFlag } from "../../core/flags";
 import { logger } from "../../core/logger";
 import { emitOpsAlert, emitOrderNew, emitOrderStatus } from "../../core/realtime";
 import { getStoreConfig, haversineM, isStoreOpenNow } from "../../core/storeInfo";
+import { getDriverLocation } from "../../core/locationStore";
 import { createRazorpayOrder, razorpayKeyId } from "../../core/razorpay";
 import { enqueuePaymentTimeout } from "../../jobs/paymentTimeout";
 import { initiateRefund } from "../payments/service";
@@ -914,7 +915,9 @@ export async function trackOrder(userId: string, role: Role, id: string): Promis
   if (order.userId !== userId && !isStaff) {
     throw new AppError("NOT_FOUND", "Order not found", 404);
   }
-  return { orderId: id, status: order.status, driverLocation: null };
+  // Live position comes from the in-memory location store (§11), fed by the
+  // driver's location pings; null before ASSIGNED or when no ping has arrived.
+  return { orderId: id, status: order.status, driverLocation: getDriverLocation(id) };
 }
 
 /* --------------------------------------------------------------- cancel */

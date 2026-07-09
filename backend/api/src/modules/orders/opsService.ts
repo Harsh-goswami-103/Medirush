@@ -16,8 +16,10 @@ import {
 } from "@medrush/contracts";
 import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
+import { logger } from "../../core/logger";
 import { emitOrderStatus } from "../../core/realtime";
 import { presignPrivateGet } from "../../core/storage";
+import { dispatchOrder } from "../dispatch/service";
 import { proposeFefo } from "../inventory/fefo";
 import { commitAllocations } from "../inventory/service";
 import { initiateRefund } from "../payments/service";
@@ -529,6 +531,10 @@ export async function markReady(
   });
 
   emitOrderStatus({ id, status: OrderStatus.READY });
+  // Offer the ready order to nearby drivers (§9.5) — best-effort AFTER commit.
+  await dispatchOrder(id).catch((err) =>
+    logger.warn({ err, orderId: id }, "dispatch failed (best-effort)"),
+  );
   return getOpsDetail(id);
 }
 
