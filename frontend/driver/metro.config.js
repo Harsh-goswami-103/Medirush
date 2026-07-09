@@ -14,7 +14,9 @@ config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, "node_modules"),
   path.resolve(workspaceRoot, "node_modules"),
 ];
-// pnpm symlinks packages into a virtual store; keep resolution deterministic.
-config.resolver.disableHierarchicalLookup = true;
+// pnpm keeps a package's deps in its own `.pnpm/<pkg>/node_modules` dir, so Metro
+// MUST walk the node_modules hierarchy (do NOT disable hierarchical lookup) and
+// follow the store's symlinks to resolve transitive deps like @expo/metro-runtime.
+config.resolver.unstable_enableSymlinks = true;
 
 module.exports = config;
