@@ -1,0 +1,4 @@
+category,name,slug,brand,composition,packSize,mrp,price,gstPct,hsn,requiresRx,scheduleClass,coldChain,maxPerOrder,binLocation,barcode,searchKeywords,description,openingStock,batchNo,expiry,cost,wholesaler,invoiceNo
+Medicines,Paracetamol 650 Tablet,paracetamol-650-tablet,Dolo,Paracetamol 650mg,Strip of 15,30.00,28.50,12,3004,no,OTC,no,10,A1-S2,,paracetamol fever pain,Fever & pain relief,200,DOLO-B01,2027-06-30,17.00,MedSupply Distributors,INV-1001
+Vitamins & Supplements,Vitamin C 500 Chewable,vitamin-c-500-chewable,Limcee,Ascorbic Acid 500mg,Bottle of 30,120.00,110.00,18,2106,no,NONE,no,6,B2-S1,,vitamin c immunity ascorbic,Immunity support,100,LIMCEE-B01,2027-03-31,72.00,MedSupply Distributors,INV-1002
+Medicines,Azithromycin 500 Tablet,azithromycin-500-tablet,Azithral,Azithromycin 500mg,Strip of 5,110.00,99.00,12,3004,yes,H1,no,5,A2-S4,,azithromycin antibiotic,Antibiotic — prescription required,50,AZI-B01,2026-12-31,60.00,Pharma Wholesale Co,INV-1003

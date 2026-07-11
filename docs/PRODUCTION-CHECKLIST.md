@@ -32,7 +32,7 @@ Updated 2026-07-12 (Phase 7 in progress).
 ## Data
 - 🟡 Nightly backup job DONE (config-gated `pg_dump|gzip|gpg`→R2) + restore runbook DONE (`docs/runbooks/restore.md`) — ⬜ **run the restore drill** + set BACKUP_GPG_PASSPHRASE/R2 creds (operator)
 - ⬜ R2 versioning on
-- ⬜ Seed removed / real catalog loaded (prices, GST, HSN, Rx flags reviewed by pharmacist)
+- 🟡 Real-catalog **loader ready** (`backend/api/scripts/seed-catalog.ts` + `scripts/catalog.example.csv` — idempotent, non-destructive CSV import: categories + products with ₹→paise, GST/HSN/Rx/schedule, optional opening-stock GRN batches; `--dry-run`, `--deactivate-missing`) — ⬜ operator: fill the CSV with the pharmacist-reviewed catalog, run it, and remove the dev seed
 
 ## Compliance
 - 🟡 Drug Licence / Pharmacist / FSSAI / GSTIN in StoreConfig → invoice renders them ✅; **footer/legal page** 🟡 (`/legal`, operator fills placeholders)
