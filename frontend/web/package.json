@@ -13,6 +13,7 @@
   "dependencies": {
     "@medrush/contracts": "workspace:*",
     "@medrush/ui": "workspace:*",
+    "@sentry/nextjs": "^10.65.0",
     "@tanstack/react-query": "^5.62.0",
     "clsx": "^2.1.1",
     "maplibre-gl": "^4.7.1",
