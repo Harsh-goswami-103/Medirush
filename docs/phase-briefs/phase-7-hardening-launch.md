@@ -51,11 +51,26 @@ handshake granted `driverProfileId` to an unverified driver (now verified-only).
 edge, rationale in commit): capture-vs-cancel manual-refund race, refund-before-guard reorder hardening,
 velocity/COD-cap TOCTOU under burst, unwired ASSIGNED→READY edge.
 
-### Remaining code items (subsequent commits)
-- **Backup cron** — pg-boss nightly `db-backup` job: `pg_dump | gzip | gpg --symmetric` (BACKUP_GPG_PASSPHRASE)
-  → private R2; config-stub no-op when R2/pg_dump absent. Plus `docs/runbooks/restore.md` (the restore drill).
-  NOTE: not locally verifiable — the portable PG has no `pg_dump`, and no `gpg`/R2 here.
-- **CI** — ensure `ci.yml` runs lint/typecheck/test/build + `pnpm audit` + frozen-lockfile (§22.1).
+### CI security job — DONE (this commit)
+`.github/workflows/ci.yml` already existed from Phase 0 (quality / security[`pnpm audit --prod
+--audit-level=high`] / test[postgres:16 + migrate] / build; actions SHA-pinned; least-privilege
+`permissions`). The `pnpm.onlyBuiltDependencies` postinstall allowlist (prisma/esbuild/sharp/@prisma/*)
+already existed too. Closed the §22.1 gap by adding **`renovate.json`** — weekly dependency PRs, grouped
+non-major, GitHub-Action **digest pinning** (upholds the SHA policy), lockfile maintenance, vulnerability
+alerts. Secret-scanning = a GitHub repo toggle (operator; a self-hosted scanner isn't added because it
+couldn't be SHA-pinned without violating our own §10.5 policy).
+
+### Backup cron + restore runbook — DONE (this commit)
+`backend/api/src/jobs/dbBackup.ts` — pg-boss nightly `db-backup` (02:00 IST): `pg_dump | gzip |
+gpg --symmetric AES-256` → private R2 (`backups/medrush-<iso>.sql.gz.gpg`), reusing `putPrivateObject`.
+Config-selected no-op via `isBackupConfigured` (needs BACKUP_GPG_PASSPHRASE + all R2 creds) — dev/CI spawn
+nothing. Registered in `core/jobs.ts`; verified live (server logs "db-backup scheduled"). Gating unit-tested
+(183 tests). `docs/runbooks/restore.md` documents the download→decrypt→restore + the monthly restore drill
+(the pipeline itself is operator-verified there — the portable PG here has no `pg_dump`/`gpg`).
+
+### Remaining code items
+- **drift-audit cron** (wallet/stock reconciliation alert, §24) — small follow-up.
+- **Driver Sentry** (`@sentry/react-native`) — needs an EAS rebuild (with the Phase-6 push follow-up).
 
 ## Operational (operator-executed — tracked, not built)
 Play Store listing + staged rollout; real catalog seed with pharmacist (remove dev seed); ≥3 verified drivers
