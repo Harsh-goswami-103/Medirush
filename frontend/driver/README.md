@@ -85,6 +85,15 @@ pnpm --filter @medrush/driver start --dev-client
 - **App icons/splash:** none bundled yet — Expo uses defaults. Add branded
   `assets/` + re-reference them in `app.json` before shipping.
 
+## Observability
+- **Sentry** (`@sentry/react-native`) is wired: `lib/sentry.ts` (`initSentry`,
+  Expo Router navigation integration) is called + `Sentry.wrap`-ed in
+  `app/_layout.tsx`; the config plugin is in `app.json`. It is a **no-op unless
+  `EXPO_PUBLIC_SENTRY_DSN` is set** (dev = off). Verified via `expo export`;
+  native crash reporting + source-map upload (needs `SENTRY_AUTH_TOKEN` +
+  `SENTRY_ORG`/`SENTRY_PROJECT` and approving the `@sentry/cli` build script)
+  activate on the next EAS build.
+
 ## Known follow-ups (need a device + more native config)
 - **FCM push** for offers when the app is backgrounded/closed (today offers
   arrive over the socket while the app is foregrounded). Pair with

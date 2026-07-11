@@ -75,9 +75,16 @@ alert + `logger.error` on any mismatch. Read-only (never auto-"fixes" a drift �
 Registered in `core/jobs.ts` (server logs "drift-audit scheduled"); integration-tested (clean reconciles;
 a corrupted balance is flagged with exact expected/actual/delta) — 185 api tests.
 
+### Driver Sentry — DONE (this commit)
+`frontend/driver`: `@sentry/react-native`@6.14 (SDK-53-compatible, config plugin in `app.json`), `lib/sentry.ts`
+(`initSentry` + Expo Router `reactNavigationIntegration`), wired in `app/_layout.tsx` (init at module load,
+navigation container registered, `export default Sentry.wrap(RootLayout)`). DSN-gated no-op via
+`EXPO_PUBLIC_SENTRY_DSN`. Verified: driver typecheck clean + `expo export` bundles it cleanly (Metro resolves it
+in the pnpm monorepo). Native crash reporting + source-map upload activate on the next EAS build (needs
+`SENTRY_AUTH_TOKEN` + org/project and approving the `@sentry/cli` build script).
+
 ### Remaining code items
-- **Driver Sentry** (`@sentry/react-native`) — needs an EAS rebuild (with the Phase-6 push follow-up).
-  (This is the ONLY remaining backend/app *code* item; everything else on §24 is operator/keys.)
+- **None.** All buildable §24 code items are complete; what's left is operator/keys (below).
 
 ## Operational (operator-executed — tracked, not built)
 Play Store listing + staged rollout; real catalog seed with pharmacist (remove dev seed); ≥3 verified drivers

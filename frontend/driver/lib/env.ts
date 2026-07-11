@@ -13,6 +13,12 @@ export const API_BASE_URL: string =
 /** Semver sent as `x-app-version`; the backend gates `/v1/driver/*` on it. */
 export const APP_VERSION = "1.0.0";
 
+/**
+ * Sentry DSN (crash/error reporting). Read from `EXPO_PUBLIC_SENTRY_DSN` so it is
+ * inlined into the bundle; unset (dev) → Sentry is a no-op (see lib/sentry.ts).
+ */
+export const SENTRY_DSN: string | undefined = process.env.EXPO_PUBLIC_SENTRY_DSN || undefined;
+
 /** Seeded local driver identity (matches `backend/api/prisma/seed.ts`). */
 export const SEED_DRIVER = {
   firebaseUid: "seed-firebase-driver",

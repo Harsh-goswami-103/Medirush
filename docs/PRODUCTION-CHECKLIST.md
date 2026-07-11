@@ -27,7 +27,7 @@ Updated 2026-07-12 (Phase 7 in progress).
 - 🟡 Fraud rules (COD refusal, velocity, new-account cap) — *present; velocity/COD-cap are TOCTOU under burst (documented follow-up)*
 - ✅ 426 app-version gate (tested)
 - ✅ **Security pass done** — adversarial review of authz/money/state paths; 3 findings fixed (P0 ops-cancel refund, P1 markReady FEFO-expiry, P2 socket driver-verify) + regression tests; core surface verified strong
-- 🟡 Sentry backend + web + ops (DSN-gated, no-op without key) — ⬜ driver Sentry pending (EAS rebuild)
+- 🟡 Sentry all surfaces — backend + web + ops + **driver** all wired (DSN-gated, no-op without key); activate with DSNs at deploy (driver native crash reporting on next EAS build)
 
 ## Data
 - 🟡 Nightly backup job DONE (config-gated `pg_dump|gzip|gpg`→R2) + restore runbook DONE (`docs/runbooks/restore.md`) — ⬜ **run the restore drill** + set BACKUP_GPG_PASSPHRASE/R2 creds (operator)
@@ -47,7 +47,7 @@ Updated 2026-07-12 (Phase 7 in progress).
 - 🟡 PWA installability (manifest/icons/offline) — *manifest exists; icons + offline SW = Phase 4/6 polish follow-up*
 
 ## Observability
-- 🟡 Sentry DSNs all surfaces, release tags — *backend + web + ops wired (DSN-gated); driver pending (EAS rebuild)*
+- 🟡 Sentry DSNs all surfaces, release tags — *backend + web + ops + driver ALL wired (DSN-gated); set DSNs at deploy*
 - ⬜ Uptime monitor + alert channel (Better Stack / WhatsApp)
 - ✅ Stuck-order watchdog (alert path implemented) — ⬜ test-fire in prod
 

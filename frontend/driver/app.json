@@ -56,7 +56,8 @@
         {
           "locationAlwaysAndWhenInUsePermission": "MedRush needs your location while you are online to receive nearby delivery offers and share live position with customers."
         }
-      ]
+      ],
+      "@sentry/react-native"
     ],
     "experiments": {
       "typedRoutes": true
