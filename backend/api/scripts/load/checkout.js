@@ -12,6 +12,7 @@
  * disposable DB with generous stock, or lower the iteration count. It is NOT run
  * in CI (needs the k6 binary + a running target).
  */
+/* global __ENV, __VU, __ITER -- injected by the k6 runtime, not Node */
 import http from "k6/http";
 import { check, sleep, fail } from "k6";
 import { Rate, Trend } from "k6/metrics";

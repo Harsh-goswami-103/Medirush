@@ -1,6 +1,7 @@
 import { randomInt } from "node:crypto";
 import {
   ActorType,
+  FEFO_MIN_SHELF_LIFE_DAYS,
   OrderStatus,
   Role,
   RxStatus,
@@ -515,9 +516,14 @@ export async function markReady(
     const batchIds = [...new Set(allocations.map((alloc) => alloc.batchId))];
     const batches = await tx.batch.findMany({
       where: { id: { in: batchIds } },
-      select: { id: true, productId: true },
+      select: { id: true, productId: true, expiryDate: true },
     });
     const batchById = new Map(batches.map((batch) => [batch.id, batch]));
+    // Re-enforce the FEFO shelf-life cutoff at commit (§9.4): proposeFefo only
+    // pre-fills the UI suggestion, but the allocations in the PATCH body are
+    // client-controlled — an expired / near-expiry batch must never be dispensed
+    // (nor snapshotted onto the Schedule-H1 register).
+    const shelfCutoffMs = Date.now() + FEFO_MIN_SHELF_LIFE_DAYS * 24 * 60 * 60 * 1000;
     for (const alloc of allocations) {
       const batch = batchById.get(alloc.batchId);
       const item = itemById.get(alloc.orderItemId);
@@ -527,6 +533,14 @@ export async function markReady(
           "Allocation batch does not belong to the order item's product",
           422,
           { batchId: alloc.batchId, orderItemId: alloc.orderItemId },
+        );
+      }
+      if (batch.expiryDate.getTime() <= shelfCutoffMs) {
+        throw new AppError(
+          "VALIDATION_ERROR",
+          "Allocation batch is expired or within the minimum shelf life",
+          422,
+          { batchId: alloc.batchId, expiryDate: batch.expiryDate.toISOString() },
         );
       }
     }
@@ -624,6 +638,10 @@ export async function opsCancel(
 
   emitOrderStatus({ id, status: OrderStatus.CANCELLED });
   clearDriverLocation(id);
+  // Refund a paid PREPAID order (external, post-commit, §18.3) — a prepaid order
+  // is only visible to ops AFTER capture, so an ops cancel is normally cancelling
+  // a PAID order. initiateRefund self-guards: no-op for COD / unpaid orders.
+  await initiateRefund(id);
   await notifyUser({
     userId: customerUserId,
     type: "ORDER_CANCELLED",

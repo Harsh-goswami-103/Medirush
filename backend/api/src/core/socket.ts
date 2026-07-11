@@ -67,13 +67,21 @@ async function verifySocketToken(token: string): Promise<{ uid: string; phone: s
 async function resolveSocketIdentity(uid: string): Promise<SocketData | null> {
   const user = await getPrisma().user.findUnique({
     where: { firebaseUid: uid },
-    select: { id: true, role: true, isBlocked: true, driver: { select: { id: true } } },
+    select: {
+      id: true,
+      role: true,
+      isBlocked: true,
+      driver: { select: { id: true, isVerified: true } },
+    },
   });
   if (!user || user.isBlocked) return null;
+  // Only a VERIFIED driver is granted driverProfileId (its driver room + the
+  // location:update path), matching the HTTP driver gate — an unverified driver
+  // must not act as one over the socket either (defense-in-depth, §8.2).
   return {
     userId: user.id,
     role: user.role,
-    ...(user.driver ? { driverProfileId: user.driver.id } : {}),
+    ...(user.driver?.isVerified ? { driverProfileId: user.driver.id } : {}),
   };
 }
 

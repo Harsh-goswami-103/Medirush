@@ -32,14 +32,29 @@ drill, soft launch) are the operator's to execute — tracked in `docs/PRODUCTIO
 - `/privacy` (DPDP Act 2023-aligned), `/terms`, `/legal` (statutory identifiers) with `[OPERATOR: …]`
   placeholders for anything the business must supply; linked from Account. No fabricated licence data.
 
+### Sentry on web + ops — DONE (commit 60bd6f7)
+- `@sentry/nextjs` via Next's native `instrumentation.ts` + `instrumentation-client.ts` (no `withSentryConfig`
+  webpack plugin — build pipeline untouched). DSN-gated no-op; Session Replay off (health data). Driver
+  Sentry (`@sentry/react-native`) deferred — needs an EAS rebuild (bundle with the Phase-6 push follow-up).
+
+### k6 load script — DONE (commit dddbcf7)
+- `backend/api/scripts/load/checkout.js`: 50 concurrent COD checkouts, p95/error thresholds. Not run in CI
+  (needs the k6 binary + a staging target).
+
+### Security pass — DONE (this commit)
+Adversarial read-only review of the authz + money + state/stock/concurrency surfaces (3 focused agents).
+**Verdict: strong** — IDOR closed everywhere (owner-scoped, 404-not-403), no role escalation/mass-assignment,
+webhook idempotency + oversell + double-delivery/assign + wallet-credit-once + payout invariants all sound.
+**3 findings fixed** (+ regression tests): P0 — `opsCancel` never refunded a PAID prepaid order (added
+`initiateRefund`); P1 — `markReady` skipped the FEFO expiry check (now re-enforced at commit); P2 — socket
+handshake granted `driverProfileId` to an unverified driver (now verified-only). Documented-not-fixed (latent/
+edge, rationale in commit): capture-vs-cancel manual-refund race, refund-before-guard reorder hardening,
+velocity/COD-cap TOCTOU under burst, unwired ASSIGNED→READY edge.
+
 ### Remaining code items (subsequent commits)
-- **Sentry on web/ops/driver** — `@sentry/nextjs` (web, ops) + `@sentry/react-native` (driver); DSN-gated,
-  no-op without `NEXT_PUBLIC_SENTRY_DSN`. Driver needs an EAS rebuild (defer with the Phase-6 push follow-up).
 - **Backup cron** — pg-boss nightly `db-backup` job: `pg_dump | gzip | gpg --symmetric` (BACKUP_GPG_PASSPHRASE)
   → private R2; config-stub no-op when R2/pg_dump absent. Plus `docs/runbooks/restore.md` (the restore drill).
-- **k6 load script** — `backend/api/scripts/load/checkout.js`: 50 concurrent COD checkouts, p95 thresholds.
-- **Security pass** — adversarial review of the authz + money paths (state machine, wallet TX, webhook
-  idempotency, RBAC, ownership, refund/restock) — run before launch, fix P0/P1.
+  NOTE: not locally verifiable — the portable PG has no `pg_dump`, and no `gpg`/R2 here.
 - **CI** — ensure `ci.yml` runs lint/typecheck/test/build + `pnpm audit` + frozen-lockfile (§22.1).
 
 ## Operational (operator-executed — tracked, not built)

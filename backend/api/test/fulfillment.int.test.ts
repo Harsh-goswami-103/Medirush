@@ -434,6 +434,39 @@ describe("fulfillment golden path (COD, PLACED→DELIVERED over HTTP)", () => {
     expect(await prisma.itemBatchAlloc.count()).toBe(0);
   });
 
+  it("rejects ready when an allocation uses an expired / near-expiry batch (422)", async () => {
+    const { order, near } = await placeCodOrder(3);
+    const { headers: opsHeaders } = await makeOps();
+
+    const pack = await app.inject({
+      method: "POST",
+      url: `/v1/ops/orders/${order.id}/start-packing`,
+      headers: opsHeaders,
+    });
+    expect(pack.statusCode, pack.body).toBe(200);
+
+    const detail = await fetchOpsDetail(order.id, opsHeaders);
+    const item = detail.items[0] as { id: string; qty: number };
+
+    // NEAR-01 expires in 10 days — inside the 30-day FEFO shelf-life cutoff, so it
+    // is excluded from the suggestion. A stale/crafted client that allocates it
+    // anyway must be rejected AT COMMIT (compliance: no near-expiry dispensing).
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/ops/orders/${order.id}/ready`,
+      headers: opsHeaders,
+      payload: { allocations: [{ orderItemId: item.id, batchId: near.id, qty: item.qty }] },
+    });
+    expect(res.statusCode, res.body).toBe(422);
+    expect(res.json().error.code).toBe("VALIDATION_ERROR");
+
+    // No side effects: order still PACKING, near batch untouched, no allocations.
+    const dbOrder = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(dbOrder.status).toBe("PACKING");
+    expect((await prisma.batch.findUniqueOrThrow({ where: { id: near.id } })).qtyAvailable).toBe(50);
+    expect(await prisma.itemBatchAlloc.count()).toBe(0);
+  });
+
   it("rejects a customer token on ops routes with 403 FORBIDDEN", async () => {
     const customer = await factories.user("CUSTOMER");
     const res = await app.inject({

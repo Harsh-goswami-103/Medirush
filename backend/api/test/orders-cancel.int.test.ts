@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { Prisma } from "@prisma/client";
 import { IDEMPOTENCY_KEY_HEADER } from "@medrush/contracts";
 
 /**
@@ -163,5 +164,72 @@ describe("POST /v1/orders/:id/cancel", () => {
     expect(secondOrder.id).toBe(firstOrder.id);
     expect(secondOrder.orderNo).toBe(firstOrder.orderNo);
     expect(await prisma.order.count()).toBe(1);
+  });
+});
+
+describe("POST /v1/ops/orders/:id/cancel", () => {
+  it("cancelling a PAID prepaid order refunds the customer (§18.3)", async () => {
+    const customer = await user("CUSTOMER");
+    const ops = await user("INVENTORY");
+    const p = await product({ stock: 10, pricePaise: 20000 });
+    const order = await prisma.order.create({
+      data: {
+        orderNo: "MR-OPSCXL-1",
+        userId: customer.id,
+        status: "PACKING",
+        paymentMethod: "PREPAID",
+        paymentStatus: "PAID",
+        addressSnapshot: {
+          name: "Cust",
+          phone: "+919000000000",
+          line1: "1 Test Rd",
+          pincode: "560001",
+          lat: 12.97,
+          lng: 77.59,
+        } as Prisma.InputJsonValue,
+        distanceM: 100,
+        itemsPaise: 20000,
+        deliveryPaise: 2000,
+        discountPaise: 0,
+        totalPaise: 22000,
+        requiresRx: false,
+        rxStatus: "NA",
+        placedAt: new Date(),
+        packedAt: new Date(),
+        items: {
+          create: [
+            {
+              productId: p.id,
+              nameSnap: p.name,
+              packSizeSnap: p.packSize,
+              pricePaise: p.pricePaise,
+              mrpPaise: p.mrpPaise,
+              gstRatePct: p.gstRatePct,
+              hsnSnap: p.hsnCode,
+              requiresRx: false,
+              qty: 1,
+            },
+          ],
+        },
+      },
+    });
+    await prisma.payment.create({
+      data: { orderId: order.id, rzpOrderId: "order_opscxl", rzpPaymentId: "pay_opscxl", amountPaise: 22000 },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/ops/orders/${order.id}/cancel`,
+      headers: authHeaders(ops),
+      payload: { reason: "out of stock" },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+
+    // CANCELLED + refund initiated (the bug: opsCancel used to skip initiateRefund).
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated?.status).toBe("CANCELLED");
+    expect(updated?.paymentStatus).toBe("REFUND_INITIATED");
+    const payment = await prisma.payment.findFirst({ where: { orderId: order.id } });
+    expect(payment?.refundId).toMatch(/^rfnd_/);
   });
 });
