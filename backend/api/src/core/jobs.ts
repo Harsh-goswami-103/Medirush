@@ -7,6 +7,7 @@ import { registerPaymentTimeout } from "../jobs/paymentTimeout";
 import { registerOfferExpiry } from "../jobs/offerExpiry";
 import { registerNotificationFanout } from "../jobs/notificationFanout";
 import { registerDbBackup } from "../jobs/dbBackup";
+import { registerDriftAudit } from "../jobs/driftAudit";
 
 /**
  * pg-boss wiring: instance + lifecycle + Phase 1 cron registration.
@@ -56,10 +57,11 @@ export async function registerCronJobs(instance: PgBoss): Promise<void> {
   await registerOfferExpiry(instance);
   // Phase 6 worker: notification push fanout.
   await registerNotificationFanout(instance);
-  // Phase 7 worker: nightly encrypted DB backup (no-op unless GPG+R2 configured).
+  // Phase 7 workers: nightly encrypted DB backup + wallet-ledger drift audit.
   await registerDbBackup(instance);
+  await registerDriftAudit(instance);
   logger.info(
-    "payment-timeout + invoice-pdf + offer-expiry + notification-fanout + db-backup workers registered",
+    "payment-timeout + invoice-pdf + offer-expiry + notification-fanout + db-backup + drift-audit workers registered",
   );
 }
 

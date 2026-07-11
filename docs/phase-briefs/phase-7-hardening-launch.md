@@ -68,9 +68,16 @@ nothing. Registered in `core/jobs.ts`; verified live (server logs "db-backup sch
 (183 tests). `docs/runbooks/restore.md` documents the download→decrypt→restore + the monthly restore drill
 (the pipeline itself is operator-verified there — the portable PG here has no `pg_dump`/`gpg`).
 
+### Drift-audit cron — DONE (this commit)
+`backend/api/src/jobs/driftAudit.ts` — nightly `drift-audit` (02:30 IST) recomputes every wallet's balance
+INDEPENDENTLY from its append-only WalletTxn ledger (`Σ CREDIT − Σ DEBIT`) and raises a `WALLET_DRIFT` ops
+alert + `logger.error` on any mismatch. Read-only (never auto-"fixes" a drift — that would hide the bug).
+Registered in `core/jobs.ts` (server logs "drift-audit scheduled"); integration-tested (clean reconciles;
+a corrupted balance is flagged with exact expected/actual/delta) — 185 api tests.
+
 ### Remaining code items
-- **drift-audit cron** (wallet/stock reconciliation alert, §24) — small follow-up.
 - **Driver Sentry** (`@sentry/react-native`) — needs an EAS rebuild (with the Phase-6 push follow-up).
+  (This is the ONLY remaining backend/app *code* item; everything else on §24 is operator/keys.)
 
 ## Operational (operator-executed — tracked, not built)
 Play Store listing + staged rollout; real catalog seed with pharmacist (remove dev seed); ≥3 verified drivers

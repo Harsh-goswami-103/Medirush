@@ -10,7 +10,7 @@ Updated 2026-07-12 (Phase 7 in progress).
 - ⬜ Cloudflare proxy + WAF ON, origin locked, edge rate rule `/v1/auth/*` 20/min, `ops.*` geo-IN, WS passthrough
 - 🟡 All env vars set & validated at boot — *`config.ts` fails loudly on missing prod keys; fill at deploy*
 - ✅ Prisma `migrate deploy` clean (3 migrations)
-- ✅ pg-boss crons registered (stuck-order, payment-timeout, invoice, offer-expiry, notification-fanout, **db-backup**) — ⬜ drift-audit cron pending
+- ✅ pg-boss crons registered (stuck-order, payment-timeout, invoice, offer-expiry, notification-fanout, **db-backup**, **drift-audit**)
 - 🟡 Feature-flag defaults reviewed (risky = OFF) — *AppSetting flags exist; review at launch*
 
 ## Payments
