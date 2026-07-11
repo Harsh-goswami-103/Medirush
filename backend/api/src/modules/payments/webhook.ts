@@ -9,9 +9,11 @@ import {
 } from "@medrush/contracts";
 import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
+import { clearDriverLocation } from "../../core/locationStore";
 import { logger } from "../../core/logger";
 import { emitOrderNew, emitOrderStatus } from "../../core/realtime";
 import { verifyWebhookSignature } from "../../core/razorpay";
+import { notifyUser } from "../notifications/service";
 import { restockOrder } from "../orders/service";
 import { assertTransition } from "../orders/stateMachine";
 import { cancelPaymentTimeout } from "../../jobs/paymentTimeout";
@@ -36,6 +38,7 @@ type WebhookOutcome =
   | {
       action: "captured";
       orderId: string;
+      userId: string;
       emit: {
         id: string;
         orderNo: string;
@@ -47,7 +50,7 @@ type WebhookOutcome =
         placedAt: Date;
       };
     }
-  | { action: "cancelled"; orderId: string }
+  | { action: "cancelled"; orderId: string; userId: string; orderNo: string }
   | { action: "refunded"; orderId: string }
   | null;
 
@@ -128,8 +131,23 @@ export async function processWebhook(
     );
     emitOrderStatus({ id: outcome.emit.id, status: outcome.emit.status, orderNo: outcome.emit.orderNo, rxStatus: outcome.emit.rxStatus });
     emitOrderNew(outcome.emit);
+    await notifyUser({
+      userId: outcome.userId,
+      type: "ORDER_PLACED",
+      title: "Payment received",
+      body: `Payment received — your order ${outcome.emit.orderNo} is confirmed.`,
+      data: { orderId: outcome.orderId },
+    });
   } else if (outcome?.action === "cancelled") {
     emitOrderStatus({ id: outcome.orderId, status: OrderStatus.CANCELLED });
+    clearDriverLocation(outcome.orderId);
+    await notifyUser({
+      userId: outcome.userId,
+      type: "ORDER_CANCELLED",
+      title: "Order cancelled",
+      body: `Your order ${outcome.orderNo} was cancelled because the payment failed. Any amount charged will be refunded.`,
+      data: { orderId: outcome.orderId },
+    });
   } else if (outcome?.action === "refunded") {
     // Refund does not change order status; nudge the customer/ops views to refetch.
     emitOrderStatus({ id: outcome.orderId, status: OrderStatus.CANCELLED });
@@ -220,6 +238,7 @@ async function handleCaptured(
   return {
     action: "captured",
     orderId: order.id,
+    userId: order.userId,
     emit: {
       id: order.id,
       orderNo: order.orderNo,
@@ -246,7 +265,7 @@ async function handleFailed(
 
   const payment = await tx.payment.findUnique({
     where: { rzpOrderId },
-    include: { order: { select: { id: true, status: true } } },
+    include: { order: { select: { id: true, status: true, userId: true, orderNo: true } } },
   });
   if (!payment) {
     logger.warn({ rzpOrderId }, "payment.failed for unknown order — ignored");
@@ -281,7 +300,7 @@ async function handleFailed(
     },
   });
 
-  return { action: "cancelled", orderId: order.id };
+  return { action: "cancelled", orderId: order.id, userId: order.userId, orderNo: order.orderNo };
 }
 
 async function handleRefundProcessed(

@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useCart } from "@/lib/cart";
+import { useAuth } from "@/lib/auth";
+import { useUnreadCount } from "@/lib/notifications";
 import { cn } from "@/lib/cn";
 
 /** 24px stroke icons for the tab bar. */
@@ -90,6 +92,46 @@ export function TopBar({
       )}
       <h1 className="flex-1 truncate text-base font-semibold text-ink-900">{title}</h1>
       {right}
+      <NotificationBell />
     </header>
+  );
+}
+
+/**
+ * Bell affordance for the notification center. Renders only for a signed-in
+ * customer; the unread count (polled ~30s via {@link useUnreadCount}) surfaces as
+ * a red badge. On the teal home header pass `tone="invert"` for a white icon.
+ */
+export function NotificationBell({ tone = "default" }: { tone?: "default" | "invert" }) {
+  const { user } = useAuth();
+  const { data } = useUnreadCount();
+  if (!user) return null;
+
+  const count = data?.data.count ?? 0;
+  return (
+    <Link
+      href="/notifications"
+      aria-label={count > 0 ? `Notifications, ${count} unread` : "Notifications"}
+      className={cn("relative -mr-1 shrink-0 p-1", tone === "invert" ? "text-white" : "text-ink-600")}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        className="h-6 w-6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+        <path d="M13.73 21a2 2 0 01-3.46 0" />
+      </svg>
+      {count > 0 && (
+        <span className="absolute -right-0.5 -top-0.5 min-w-4 rounded-pill bg-danger px-1 text-center text-[10px] font-semibold leading-4 text-white">
+          {count > 99 ? "99+" : count}
+        </span>
+      )}
+    </Link>
   );
 }

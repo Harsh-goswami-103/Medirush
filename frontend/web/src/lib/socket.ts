@@ -24,9 +24,15 @@ export function useOrderLive(orderId: string | undefined): { connected: boolean 
       auth: { token },
       transports: ["websocket"],
     });
-    const invalidate = () => {
+    const invalidateOrder = () => {
       void qc.invalidateQueries({ queryKey: ["order", orderId] });
       void qc.invalidateQueries({ queryKey: ["order-track", orderId] });
+    };
+    // A status transition also writes a notification server-side — refresh the
+    // bell badge + center immediately rather than waiting on the 30s poll.
+    const onStatus = () => {
+      invalidateOrder();
+      void qc.invalidateQueries({ queryKey: ["notifications"] });
     };
     socket.on("connect", () => {
       setConnected(true);
@@ -38,8 +44,8 @@ export function useOrderLive(orderId: string | undefined): { connected: boolean 
     });
     socket.on("disconnect", () => setConnected(false));
     socket.on("connect_error", () => setConnected(false));
-    socket.on("order:status", invalidate);
-    socket.on("driver:location", invalidate);
+    socket.on("order:status", onStatus);
+    socket.on("driver:location", invalidateOrder);
 
     return () => {
       socket.off();

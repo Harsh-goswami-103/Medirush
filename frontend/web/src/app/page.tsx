@@ -6,6 +6,7 @@ import type { Category, ProductSummary } from "@medrush/contracts";
 import { api, qs } from "@/lib/api";
 import { useStore } from "@/lib/store";
 import { ProductCard } from "@/components/shop";
+import { NotificationBell } from "@/components/AppShell";
 import { EmptyState, ErrorState, Spinner } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
@@ -40,8 +41,13 @@ export default function Home() {
   return (
     <div>
       <div className="bg-primary-600 px-4 pb-4 pt-5 text-white">
-        <p className="text-xs opacity-90">Delivering to you in ~40 min</p>
-        <h1 className="text-lg font-semibold">{store?.name ?? "MedRush"}</h1>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p className="text-xs opacity-90">Delivering to you in ~40 min</p>
+            <h1 className="text-lg font-semibold">{store?.name ?? "MedRush"}</h1>
+          </div>
+          <NotificationBell tone="invert" />
+        </div>
         {store && !store.isOpen && (
           <p className="mt-1 text-xs font-medium text-white/90">⚠ Store is currently closed</p>
         )}

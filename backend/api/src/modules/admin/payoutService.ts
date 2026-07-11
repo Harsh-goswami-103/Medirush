@@ -8,6 +8,8 @@ import {
 } from "@medrush/contracts";
 import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
+import { logger } from "../../core/logger";
+import { notifyUser } from "../notifications/service";
 import type { AdminActor } from "./driverService";
 import { payoutDebit, payoutReverseCredit } from "./payoutLedger";
 
@@ -72,6 +74,34 @@ async function loadAdminPayout(id: string): Promise<AdminPayout> {
 }
 
 /**
+ * Post-commit driver notification for a payout transition (§7.2). Best-effort:
+ * resolves the DriverProfile → User id and persists a durable Notification;
+ * wrapped so it never disrupts the committed money move.
+ */
+async function notifyDriverPayout(
+  driverProfileId: string,
+  amountPaise: number,
+  type: string,
+  title: string,
+  body: string,
+  payoutId: string,
+): Promise<void> {
+  try {
+    const driver = await getPrisma().driverProfile.findUnique({
+      where: { id: driverProfileId },
+      select: { userId: true },
+    });
+    if (!driver) return;
+    await notifyUser({ userId: driver.userId, type, title, body, data: { payoutId } });
+  } catch (err) {
+    logger.warn({ err, payoutId }, "notifyDriverPayout failed (best-effort)");
+  }
+}
+
+/** ₹ display for a paise amount (payout notification copy). */
+const rupees = (paise: number): string => `₹${(paise / 100).toFixed(2)}`;
+
+/**
  * GET /v1/admin/payouts — cursor-paginated, newest first, optional status
  * filter. Driver name/phone are joined in bulk (Payout has no driver relation).
  */
@@ -117,6 +147,8 @@ export async function listPayouts(
 export async function approvePayout(id: string, actor: AdminActor): Promise<AdminPayout> {
   const prisma = getPrisma();
 
+  let driverProfileId = "";
+  let amountPaise = 0;
   await prisma.$transaction(async (tx) => {
     const payout = await tx.payout.findUnique({
       where: { id },
@@ -128,6 +160,8 @@ export async function approvePayout(id: string, actor: AdminActor): Promise<Admi
         status: payout.status,
       });
     }
+    driverProfileId = payout.driverId;
+    amountPaise = payout.amountPaise;
 
     const updated = await tx.payout.updateMany({
       where: { id, status: PayoutStatus.REQUESTED },
@@ -151,6 +185,14 @@ export async function approvePayout(id: string, actor: AdminActor): Promise<Admi
     });
   });
 
+  await notifyDriverPayout(
+    driverProfileId,
+    amountPaise,
+    "PAYOUT_APPROVED",
+    "Payout approved",
+    `Your payout of ${rupees(amountPaise)} was approved and will be paid out shortly.`,
+    id,
+  );
   return loadAdminPayout(id);
 }
 
@@ -165,14 +207,21 @@ export async function markPayoutPaid(
 ): Promise<AdminPayout> {
   const prisma = getPrisma();
 
+  let driverProfileId = "";
+  let amountPaise = 0;
   await prisma.$transaction(async (tx) => {
-    const payout = await tx.payout.findUnique({ where: { id }, select: { status: true } });
+    const payout = await tx.payout.findUnique({
+      where: { id },
+      select: { status: true, driverId: true, amountPaise: true },
+    });
     if (!payout) throw new AppError("NOT_FOUND", "Payout not found", 404);
     if (payout.status !== PayoutStatus.APPROVED) {
       throw new AppError("CONFLICT", "Only an APPROVED payout can be marked paid", 409, {
         status: payout.status,
       });
     }
+    driverProfileId = payout.driverId;
+    amountPaise = payout.amountPaise;
 
     const updated = await tx.payout.updateMany({
       where: { id, status: PayoutStatus.APPROVED },
@@ -198,6 +247,14 @@ export async function markPayoutPaid(
     });
   });
 
+  await notifyDriverPayout(
+    driverProfileId,
+    amountPaise,
+    "PAYOUT_PAID",
+    "Payout paid",
+    `Your payout of ${rupees(amountPaise)} has been paid (UTR ${body.utr}).`,
+    id,
+  );
   return loadAdminPayout(id);
 }
 

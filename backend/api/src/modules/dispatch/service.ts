@@ -19,7 +19,37 @@ import {
 } from "../../core/realtime";
 import { getStoreConfig, haversineM } from "../../core/storeInfo";
 import { enqueueOfferExpiry } from "../../jobs/offerExpiry";
+import { notifyUser } from "../notifications/service";
 import { assertTransition } from "../orders/stateMachine";
+
+/**
+ * Post-commit customer notification for an ASSIGNED order (§7.2). Best-effort:
+ * the order + driver reads are wrapped so a failure never disrupts the committed
+ * assignment (notifyUser itself already swallows its own errors).
+ */
+async function notifyAssigned(orderId: string, driverProfileId: string): Promise<void> {
+  try {
+    const order = await getPrisma().order.findUnique({
+      where: { id: orderId },
+      select: { userId: true, orderNo: true },
+    });
+    if (!order) return;
+    const driver = await getPrisma().driverProfile.findUnique({
+      where: { id: driverProfileId },
+      select: { user: { select: { name: true } } },
+    });
+    const driverName = driver?.user.name ?? "A driver";
+    await notifyUser({
+      userId: order.userId,
+      type: "ORDER_ASSIGNED",
+      title: "Driver assigned",
+      body: `${driverName} is on the way to the store to pick up your order ${order.orderNo}.`,
+      data: { orderId },
+    });
+  } catch (err) {
+    logger.warn({ err, orderId }, "notifyAssigned failed (best-effort)");
+  }
+}
 
 /**
  * Phase 1 dispatch stub (brief scope decision #3): dispatch waves/offers are
@@ -83,6 +113,7 @@ export async function assignDriver(orderId: string, driverId: string): Promise<D
   });
 
   emitOrderStatus({ id: orderId, status: OrderStatus.ASSIGNED });
+  await notifyAssigned(orderId, driverId);
   return delivery;
 }
 
@@ -322,6 +353,7 @@ export async function acceptOffer(
   });
 
   emitOrderStatus({ id: outcome.orderId, status: OrderStatus.ASSIGNED });
+  await notifyAssigned(outcome.orderId, driverProfileId);
   for (const sibling of outcome.siblings) {
     emitOfferCancelled(sibling.driverId, { offerId: sibling.id, orderId: outcome.orderId });
   }

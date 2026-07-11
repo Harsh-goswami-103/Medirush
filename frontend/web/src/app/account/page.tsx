@@ -6,12 +6,13 @@ import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Address, CreateAddressBody, UpdateMeBody, User } from "@medrush/contracts";
 import { api, ApiError } from "@/lib/api";
+import { whatsappUrl } from "@/lib/env";
 import { useAuth } from "@/lib/auth";
 import { useStore } from "@/lib/store";
 import { cn } from "@/lib/cn";
 import { useToast } from "@/components/toast";
 import { TopBar } from "@/components/AppShell";
-import { Badge, Button, Card, EmptyState, ErrorState, Spinner } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, ErrorState, Spinner, WhatsAppIcon } from "@/components/ui";
 import { Field, TextInput } from "@/components/kit";
 import { Modal } from "@/components/modal";
 
@@ -219,6 +220,17 @@ export default function AccountPage() {
             </ul>
           )}
         </Card>
+
+        {/* ------------------------------------------------------------ help */}
+        <a
+          href={whatsappUrl("Hi, I need help with my MedRush order.")}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex w-full items-center justify-center gap-2 rounded-input border border-success/30 bg-success/5 px-3.5 py-2 text-sm font-medium text-success hover:bg-success/10"
+        >
+          <WhatsAppIcon />
+          Chat with us on WhatsApp
+        </a>
 
         {/* -------------------------------------------------------- sign out */}
         <Button

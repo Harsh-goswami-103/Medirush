@@ -5,9 +5,11 @@ import {
   PaymentStatus,
 } from "@medrush/contracts";
 import { getPrisma } from "../../core/db";
+import { clearDriverLocation } from "../../core/locationStore";
 import { logger } from "../../core/logger";
 import { emitOrderStatus } from "../../core/realtime";
 import { createRazorpayRefund } from "../../core/razorpay";
+import { notifyUser } from "../notifications/service";
 import { restockOrder } from "../orders/service";
 import { assertTransition } from "../orders/stateMachine";
 
@@ -107,7 +109,7 @@ export async function expireUnpaidOrder(orderId: string): Promise<void> {
 
   const order = await prisma.order.findUnique({
     where: { id: orderId },
-    select: { status: true },
+    select: { status: true, userId: true, orderNo: true },
   });
   if (!order || order.status !== OrderStatus.PENDING_PAYMENT) return;
 
@@ -143,6 +145,14 @@ export async function expireUnpaidOrder(orderId: string): Promise<void> {
 
   if (cancelled) {
     emitOrderStatus({ id: orderId, status: OrderStatus.CANCELLED });
+    clearDriverLocation(orderId);
+    await notifyUser({
+      userId: order.userId,
+      type: "ORDER_CANCELLED",
+      title: "Order cancelled",
+      body: `Your order ${order.orderNo} was cancelled because payment wasn't completed in time.`,
+      data: { orderId },
+    });
     logger.info({ orderId }, "PENDING_PAYMENT order auto-cancelled on payment timeout");
   }
 }

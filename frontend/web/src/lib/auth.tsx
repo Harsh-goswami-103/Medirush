@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type { Role } from "@medrush/contracts";
 import { api, setAuthToken } from "./api";
 
@@ -36,6 +37,7 @@ interface AuthState {
 const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const qc = useQueryClient();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -88,7 +90,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
     setToken(null);
     if (typeof window !== "undefined") localStorage.removeItem(TOKEN_KEY);
-  }, []);
+    // Drop every cached query (notifications, orders, addresses, cart …) so a
+    // subsequent sign-in on a shared device never renders the prior user's data.
+    qc.clear();
+  }, [qc]);
 
   return (
     <AuthContext.Provider value={{ user, token, loading, devLogin, refreshUser, logout }}>

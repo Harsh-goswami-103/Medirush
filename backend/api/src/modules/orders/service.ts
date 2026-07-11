@@ -23,12 +23,14 @@ import {
   type GstRate,
   type Order,
   type OrderDetail,
+  type OrderDriver,
   type OrderEvent,
   type OrderItem,
   type OrderListQuery,
   type OrderSummary,
   type Prescription,
   type TrackOrderResult,
+  type TrackTimelineEntry,
 } from "@medrush/contracts";
 import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
@@ -36,7 +38,8 @@ import { getFlag } from "../../core/flags";
 import { logger } from "../../core/logger";
 import { emitOpsAlert, emitOrderNew, emitOrderStatus } from "../../core/realtime";
 import { getStoreConfig, haversineM, isStoreOpenNow } from "../../core/storeInfo";
-import { getDriverLocation } from "../../core/locationStore";
+import { clearDriverLocation, getDriverLocation } from "../../core/locationStore";
+import { notifyUser } from "../notifications/service";
 import { createRazorpayOrder, razorpayKeyId } from "../../core/razorpay";
 import { enqueuePaymentTimeout } from "../../jobs/paymentTimeout";
 import { initiateRefund } from "../payments/service";
@@ -511,6 +514,13 @@ async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<Cre
     totalPaise: detail.totalPaise,
     placedAt: detail.placedAt,
   });
+  await notifyUser({
+    userId,
+    type: "ORDER_PLACED",
+    title: "Order placed",
+    body: `We've received your order ${detail.orderNo} and started getting it ready.`,
+    data: { orderId: detail.id },
+  });
 
   return { order: detail };
 }
@@ -903,21 +913,84 @@ export async function listOrders(
   };
 }
 
-/** GET /v1/orders/:id/track — status + a driver-location placeholder (live
- * location is the in-memory realtime map, wired in Phase 5). */
+/**
+ * GET /v1/orders/:id/track — the live-tracking payload (§3.5, §18.1) and the
+ * polling fallback when the socket is down. Carries the map anchors (store +
+ * destination), the assigned-driver card, the last known driver ping (in-memory
+ * §11), the status timeline, and a heuristic ETA. Ownership 404 for non-owners.
+ */
 export async function trackOrder(userId: string, role: Role, id: string): Promise<TrackOrderResult> {
   const order = await getPrisma().order.findUnique({
     where: { id },
-    select: { userId: true, status: true },
+    select: {
+      userId: true,
+      status: true,
+      addressSnapshot: true,
+      events: { orderBy: { createdAt: "asc" }, select: { to: true, createdAt: true } },
+      delivery: {
+        select: {
+          driver: {
+            select: {
+              vehicleType: true,
+              vehicleNo: true,
+              user: { select: { name: true, phone: true } },
+            },
+          },
+        },
+      },
+    },
   });
   if (!order) throw new AppError("NOT_FOUND", "Order not found", 404);
   const isStaff = role === Role.INVENTORY || role === Role.ADMIN;
   if (order.userId !== userId && !isStaff) {
     throw new AppError("NOT_FOUND", "Order not found", 404);
   }
-  // Live position comes from the in-memory location store (§11), fed by the
-  // driver's location pings; null before ASSIGNED or when no ping has arrived.
-  return { orderId: id, status: order.status, driverLocation: getDriverLocation(id) };
+
+  const store = await getStoreConfig();
+  const snap = order.addressSnapshot as unknown as AddressSnapshot;
+  const destination = { lat: snap.lat, lng: snap.lng };
+
+  // Assigned-driver card — same shape as OrderDetail; null before ASSIGNED.
+  const driver: OrderDriver | null = order.delivery
+    ? {
+        name: order.delivery.driver.user.name,
+        phone: order.delivery.driver.user.phone,
+        vehicleType: order.delivery.driver.vehicleType,
+        vehicleNo: order.delivery.driver.vehicleNo,
+      }
+    : null;
+
+  // Live position from the in-memory store (§11), fed by the driver's pings;
+  // null before ASSIGNED or when no ping has arrived (and cleared on terminal).
+  const driverLocation = getDriverLocation(id);
+
+  // Status timeline, oldest→newest, collapsing consecutive duplicate statuses.
+  const timeline: TrackTimelineEntry[] = [];
+  for (const event of order.events) {
+    const prev = timeline[timeline.length - 1];
+    if (prev && prev.status === event.to) continue;
+    timeline.push({ status: event.to, at: event.createdAt.toISOString() });
+  }
+
+  // Heuristic minutes-to-doorstep from the live ping at ~5 m/s (≈18 km/h); null
+  // once terminal or before any ping exists.
+  const isTerminal =
+    order.status === OrderStatus.DELIVERED || order.status === OrderStatus.CANCELLED;
+  const etaMinutes =
+    driverLocation && !isTerminal
+      ? Math.max(1, Math.ceil(haversineM(driverLocation, destination) / 5 / 60))
+      : null;
+
+  return {
+    orderId: id,
+    status: order.status,
+    store: { lat: store.lat, lng: store.lng },
+    destination,
+    driver,
+    driverLocation,
+    timeline,
+    etaMinutes,
+  };
 }
 
 /* --------------------------------------------------------------- cancel */
@@ -936,7 +1009,7 @@ export async function cancelOrder(
 
   const existing = await prisma.order.findUnique({
     where: { id },
-    select: { userId: true, status: true },
+    select: { userId: true, status: true, orderNo: true },
   });
   if (!existing || existing.userId !== userId) {
     throw new AppError("NOT_FOUND", "Order not found", 404);
@@ -967,6 +1040,14 @@ export async function cancelOrder(
     });
 
     emitOrderStatus({ id, status: OrderStatus.CANCELLED });
+    clearDriverLocation(id);
+    await notifyUser({
+      userId,
+      type: "ORDER_CANCELLED",
+      title: "Order cancelled",
+      body: `Your order ${existing.orderNo} was cancelled: ${reason}`,
+      data: { orderId: id },
+    });
     // Refund a paid PREPAID order (external, post-commit, §14). No-op for COD and
     // for still-unpaid PENDING_PAYMENT orders (initiateRefund guards on PAID).
     await initiateRefund(id);

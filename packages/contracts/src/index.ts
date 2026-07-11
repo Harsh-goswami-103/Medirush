@@ -21,6 +21,7 @@ export * from "./schemas/auth";
 export * from "./schemas/catalog";
 export * from "./schemas/cart";
 export * from "./schemas/order";
+export * from "./schemas/notification";
 export * from "./schemas/driver";
 export * from "./schemas/wallet";
 export * from "./schemas/inventory";

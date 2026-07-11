@@ -32,11 +32,12 @@ import {
 import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
 import { logger } from "../../core/logger";
-import { setDriverLocation } from "../../core/locationStore";
+import { clearDriverLocation, setDriverLocation } from "../../core/locationStore";
 import { emitDriverLocation, emitOrderStatus } from "../../core/realtime";
 import { getStoreConfig } from "../../core/storeInfo";
 import { enqueueInvoicePdf } from "../../jobs/invoicePdf";
 import { acceptOffer, rejectOffer } from "../dispatch/service";
+import { notifyUser } from "../notifications/service";
 import { assertTransition } from "../orders/stateMachine";
 import { creditWallet } from "../wallet/ledger";
 
@@ -173,7 +174,11 @@ export const driverRoutes: FastifyPluginAsync = async (app) => {
 
       const delivery = await prisma.delivery.findUnique({
         where: { id: request.params.id },
-        select: { id: true, driverId: true, order: { select: { id: true, status: true } } },
+        select: {
+          id: true,
+          driverId: true,
+          order: { select: { id: true, status: true, userId: true, orderNo: true } },
+        },
       });
       if (!delivery) throw new AppError("NOT_FOUND", "Delivery not found", 404);
       if (delivery.driverId !== profile.id) {
@@ -205,6 +210,13 @@ export const driverRoutes: FastifyPluginAsync = async (app) => {
       });
 
       emitOrderStatus({ id: delivery.order.id, status: OrderStatus.PICKED_UP });
+      await notifyUser({
+        userId: delivery.order.userId,
+        type: "ORDER_PICKED_UP",
+        title: "On the way",
+        body: `Your order ${delivery.order.orderNo} is on the way to you.`,
+        data: { orderId: delivery.order.id },
+      });
 
       const active = await findActiveDelivery({ id: delivery.id });
       if (!active) throw new AppError("INTERNAL", "Delivery disappeared after update", 500);
@@ -327,6 +339,14 @@ export const driverRoutes: FastifyPluginAsync = async (app) => {
       });
 
       emitOrderStatus({ id: order.id, status: OrderStatus.DELIVERED });
+      clearDriverLocation(order.id);
+      await notifyUser({
+        userId: order.userId,
+        type: "ORDER_DELIVERED",
+        title: "Delivered",
+        body: `Your order ${order.orderNo} was delivered. Thank you for choosing MedRush!`,
+        data: { orderId: order.id },
+      });
 
       // Post-delivery GST invoice (§9.7) — best-effort enqueue AFTER commit; the
       // job is idempotent so a retry is safe and a miss never fails the delivery.

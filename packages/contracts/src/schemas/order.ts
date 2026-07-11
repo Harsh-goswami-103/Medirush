@@ -28,6 +28,7 @@ import {
   GstRateSchema,
   IdSchema,
   IsoDateTimeSchema,
+  LatLngSchema,
   LatSchema,
   LngSchema,
   MetersSchema,
@@ -218,10 +219,28 @@ export const ListOrdersResponseSchema = paginatedEnvelope(OrderSummarySchema);
 
 /* ----------------------------------------------------------------- track */
 
-/** GET /v1/orders/:id/track — polling fallback when the socket is down (3–5s cadence). */
+/** One transition on the customer's status timeline (§18.1 stepper), oldest→newest. */
+export const TrackTimelineEntrySchema = z.object({
+  status: OrderStatusSchema,
+  at: IsoDateTimeSchema,
+});
+export type TrackTimelineEntry = z.infer<typeof TrackTimelineEntrySchema>;
+
+/**
+ * GET /v1/orders/:id/track — drives the live-tracking screen (§3.5, §18.1) and
+ * doubles as the polling fallback when the socket is down (3–5s cadence). Carries
+ * the map anchors (store + destination), the assigned-driver card, the last known
+ * driver ping, the status timeline, and a heuristic ETA.
+ */
 export const TrackOrderResultSchema = z.object({
   orderId: IdSchema,
   status: OrderStatusSchema,
+  /** Pickup origin — the dark store (StoreConfig); map anchor. */
+  store: LatLngSchema,
+  /** Delivery destination — the order address; map anchor. */
+  destination: LatLngSchema,
+  /** Assigned-driver card (name/phone/vehicle); null before ASSIGNED. */
+  driver: OrderDriverSchema.nullable(),
   /** Last known driver position; null before ASSIGNED or when no ping yet. */
   driverLocation: z
     .object({
@@ -231,6 +250,13 @@ export const TrackOrderResultSchema = z.object({
       ts: IsoDateTimeSchema,
     })
     .nullable(),
+  /** Status transitions for the stepper, oldest→newest. */
+  timeline: z.array(TrackTimelineEntrySchema),
+  /**
+   * Heuristic minutes-to-doorstep from the live position (haversine ÷ avg speed);
+   * null before a live ping exists or once terminal.
+   */
+  etaMinutes: z.number().int().nonnegative().nullable(),
 });
 export type TrackOrderResult = z.infer<typeof TrackOrderResultSchema>;
 export const TrackOrderResponseSchema = envelope(TrackOrderResultSchema);

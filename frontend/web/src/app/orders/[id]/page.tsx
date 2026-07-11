@@ -13,7 +13,7 @@ import type {
   Prescription,
 } from "@medrush/contracts";
 import { api, ApiError } from "@/lib/api";
-import { API_BASE_URL } from "@/lib/env";
+import { API_BASE_URL, whatsappUrl } from "@/lib/env";
 import { useAuth } from "@/lib/auth";
 import { useOrderLive } from "@/lib/socket";
 import { formatDateTime, formatPaise } from "@/lib/format";
@@ -27,6 +27,7 @@ import {
   OrderStatusBadge,
   RxBadge,
   Spinner,
+  WhatsAppIcon,
 } from "@/components/ui";
 import { Field, Textarea } from "@/components/kit";
 import { Modal } from "@/components/modal";
@@ -70,6 +71,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     queryKey: ["order", id],
     queryFn: () => api.get<OrderDetail>(`/v1/orders/${id}`),
     enabled: Boolean(user),
+    // Polling fallback (§7.3): if the socket is down the OTP/status still refresh
+    // (READY reveals the OTP). Poll fast while disconnected, back off when live.
+    refetchInterval: connected ? 20000 : 4000,
   });
 
   const cancelMut = useMutation({
@@ -390,6 +394,17 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 </span>
               </div>
             </Section>
+
+            {/* Support — WhatsApp deep-link with the order number pre-filled. */}
+            <a
+              href={whatsappUrl(`Hi, I need help with order ${order.orderNo}.`)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex w-full items-center justify-center gap-2 rounded-input border border-success/30 bg-success/5 px-3.5 py-2 text-sm font-medium text-success hover:bg-success/10"
+            >
+              <WhatsAppIcon />
+              Need help with this order?
+            </a>
           </div>
 
           {/* Sticky contextual action bar (clears the tab nav at bottom-16). */}

@@ -16,12 +16,14 @@ import {
 } from "@medrush/contracts";
 import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
+import { clearDriverLocation } from "../../core/locationStore";
 import { logger } from "../../core/logger";
 import { emitOrderStatus } from "../../core/realtime";
 import { presignPrivateGet } from "../../core/storage";
 import { dispatchOrder } from "../dispatch/service";
 import { proposeFefo } from "../inventory/fefo";
 import { commitAllocations } from "../inventory/service";
+import { notifyUser } from "../notifications/service";
 import { initiateRefund } from "../payments/service";
 import { restockOrder } from "./service";
 import { assertTransition } from "./stateMachine";
@@ -266,13 +268,20 @@ export async function rxReview(
 
   const order = await prisma.order.findUnique({
     where: { id },
-    select: { status: true, requiresRx: true },
+    select: { status: true, requiresRx: true, rxStatus: true, userId: true, orderNo: true },
   });
   if (!order) throw new AppError("NOT_FOUND", "Order not found", 404);
   if (!order.requiresRx || order.status !== OrderStatus.RX_REVIEW) {
     throw new AppError("CONFLICT", "This order is not awaiting prescription review", 409, {
       status: order.status,
     });
+  }
+  // Idempotent APPROVE: an APPROVE'd order stays in RX_REVIEW (only rxStatus flips),
+  // so without this guard a retry/double-click would re-fire the notification, the
+  // socket emit and a duplicate audit row. A re-REJECT is already blocked above
+  // (reject moves the order to CANCELLED, so status !== RX_REVIEW).
+  if (body.status === RxStatus.APPROVED && order.rxStatus === RxStatus.APPROVED) {
+    return getOpsDetail(id);
   }
 
   // The prescription under review is the latest upload.
@@ -323,6 +332,13 @@ export async function rxReview(
     });
 
     emitOrderStatus({ id, status: OrderStatus.RX_REVIEW, rxStatus: RxStatus.APPROVED });
+    await notifyUser({
+      userId: order.userId,
+      type: "ORDER_RX_APPROVED",
+      title: "Prescription approved",
+      body: `Your prescription for order ${order.orderNo} was approved — we're preparing it now.`,
+      data: { orderId: id },
+    });
     return getOpsDetail(id);
   }
 
@@ -382,6 +398,16 @@ export async function rxReview(
   // External refund OUTSIDE the tx (§14) — no-op for COD / unpaid prepaid.
   await initiateRefund(id);
   emitOrderStatus({ id, status: OrderStatus.CANCELLED });
+  clearDriverLocation(id);
+  // Rx rejection is a cancellation, but the customer gets the specific rejection
+  // notice (not a generic ORDER_CANCELLED) — do not double-notify.
+  await notifyUser({
+    userId: order.userId,
+    type: "ORDER_RX_REJECTED",
+    title: "Prescription not approved",
+    body: `Your prescription for order ${order.orderNo} couldn't be approved: ${note}. The order was cancelled and any payment refunded.`,
+    data: { orderId: id },
+  });
   return getOpsDetail(id);
 }
 
@@ -444,6 +470,8 @@ export async function markReady(
   const prisma = getPrisma();
   const actorType = actorTypeFor(actor.role);
 
+  let customerUserId = "";
+  let customerOrderNo = "";
   await prisma.$transaction(async (tx) => {
     const order = await tx.order.findUnique({
       where: { id },
@@ -451,6 +479,8 @@ export async function markReady(
     });
     if (!order) throw new AppError("NOT_FOUND", "Order not found", 404);
     assertTransition(order.status, OrderStatus.READY, actorType);
+    customerUserId = order.userId;
+    customerOrderNo = order.orderNo;
 
     // Every allocation must reference a known order item…
     const itemById = new Map(order.items.map((item) => [item.id, item]));
@@ -531,6 +561,13 @@ export async function markReady(
   });
 
   emitOrderStatus({ id, status: OrderStatus.READY });
+  await notifyUser({
+    userId: customerUserId,
+    type: "ORDER_READY",
+    title: "Order packed",
+    body: `Your order ${customerOrderNo} is packed and will be on its way soon.`,
+    data: { orderId: id },
+  });
   // Offer the ready order to nearby drivers (§9.5) — best-effort AFTER commit.
   await dispatchOrder(id).catch((err) =>
     logger.warn({ err, orderId: id }, "dispatch failed (best-effort)"),
@@ -551,10 +588,17 @@ export async function opsCancel(
   const prisma = getPrisma();
   const actorType = actorTypeFor(actor.role);
 
+  let customerUserId = "";
+  let customerOrderNo = "";
   await prisma.$transaction(async (tx) => {
-    const order = await tx.order.findUnique({ where: { id }, select: { status: true } });
+    const order = await tx.order.findUnique({
+      where: { id },
+      select: { status: true, userId: true, orderNo: true },
+    });
     if (!order) throw new AppError("NOT_FOUND", "Order not found", 404);
     assertTransition(order.status, OrderStatus.CANCELLED, actorType);
+    customerUserId = order.userId;
+    customerOrderNo = order.orderNo;
 
     const updated = await tx.order.updateMany({
       where: { id, status: order.status },
@@ -579,5 +623,13 @@ export async function opsCancel(
   });
 
   emitOrderStatus({ id, status: OrderStatus.CANCELLED });
+  clearDriverLocation(id);
+  await notifyUser({
+    userId: customerUserId,
+    type: "ORDER_CANCELLED",
+    title: "Order cancelled",
+    body: `Your order ${customerOrderNo} was cancelled: ${reason}`,
+    data: { orderId: id },
+  });
   return getOpsDetail(id);
 }

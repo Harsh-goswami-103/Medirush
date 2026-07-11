@@ -3,6 +3,7 @@ import { authRoutes } from "./auth/routes";
 import { addressRoutes } from "./addresses/routes";
 import { storeRoutes } from "./store/routes";
 import { deviceRoutes } from "./devices/routes";
+import { notificationRoutes } from "./notifications/routes";
 import { catalogRoutes } from "./catalog/routes";
 import { cartRoutes } from "./cart/routes";
 import { orderRoutes } from "./orders/routes";
@@ -27,6 +28,7 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
   await app.register(addressRoutes);
   await app.register(storeRoutes);
   await app.register(deviceRoutes);
+  await app.register(notificationRoutes);
   await app.register(catalogRoutes);
   await app.register(cartRoutes);
   await app.register(orderRoutes);

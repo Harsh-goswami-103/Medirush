@@ -5,6 +5,7 @@ import { runStuckOrderScan } from "../jobs/stuckOrders";
 import { registerInvoicePdf } from "../jobs/invoicePdf";
 import { registerPaymentTimeout } from "../jobs/paymentTimeout";
 import { registerOfferExpiry } from "../jobs/offerExpiry";
+import { registerNotificationFanout } from "../jobs/notificationFanout";
 
 /**
  * pg-boss wiring: instance + lifecycle + Phase 1 cron registration.
@@ -52,7 +53,11 @@ export async function registerCronJobs(instance: PgBoss): Promise<void> {
   await registerInvoicePdf(instance);
   // Phase 5 worker: dispatch offer-expiry / wave escalation.
   await registerOfferExpiry(instance);
-  logger.info("payment-timeout + invoice-pdf + offer-expiry workers registered");
+  // Phase 6 worker: notification push fanout.
+  await registerNotificationFanout(instance);
+  logger.info(
+    "payment-timeout + invoice-pdf + offer-expiry + notification-fanout workers registered",
+  );
 }
 
 export async function startJobs(): Promise<void> {

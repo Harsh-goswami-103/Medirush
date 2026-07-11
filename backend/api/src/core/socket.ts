@@ -1,6 +1,7 @@
 import type { Server as HttpServer } from "node:http";
 import { Server, type Socket } from "socket.io";
 import {
+  LocationUpdateEventSchema,
   OPS_ROOM,
   OrderStatus,
   PhoneSchema,
@@ -76,8 +77,12 @@ async function resolveSocketIdentity(uid: string): Promise<SocketData | null> {
   };
 }
 
-/** May this identity join the requested room? (§7.3 authorization matrix.) */
-async function canJoinRoom(data: SocketData, room: string): Promise<boolean> {
+/**
+ * May this identity join the requested room? (§7.3 authorization matrix.)
+ * Exported for the room-authz test — a customer must never join another order's
+ * room (no cross-order `driver:location` leak).
+ */
+export async function canJoinRoom(data: SocketData, room: string): Promise<boolean> {
   const isStaff = data.role === Role.INVENTORY || data.role === Role.ADMIN;
 
   if (room === OPS_ROOM) return isStaff;
@@ -171,6 +176,11 @@ export function attachSocket(httpServer: HttpServer): MedrushIo {
     socket.on("location:update", (payload) => {
       const driverProfileId = socket.data.driverProfileId;
       if (!driverProfileId) return;
+      // Validate the untrusted client payload before any use — ignore malformed
+      // pings (out-of-range lat/lng, wrong types) rather than trust them (§7.3).
+      const parsed = LocationUpdateEventSchema.safeParse(payload);
+      if (!parsed.success) return;
+      const ping = parsed.data;
       void (async () => {
         const active = await getPrisma().delivery.findFirst({
           where: {
@@ -181,12 +191,12 @@ export function attachSocket(httpServer: HttpServer): MedrushIo {
           select: { orderId: true },
         });
         if (!active) return;
-        const ts = payload.ts ?? new Date().toISOString();
-        setDriverLocation(active.orderId, { lat: payload.lat, lng: payload.lng, ts });
+        const ts = ping.ts ?? new Date().toISOString();
+        setDriverLocation(active.orderId, { lat: ping.lat, lng: ping.lng, ts });
         // socket.to() broadcasts to the room EXCLUDING the sender.
         socket
           .to(orderRoom(active.orderId))
-          .emit("driver:location", { orderId: active.orderId, lat: payload.lat, lng: payload.lng, ts });
+          .emit("driver:location", { orderId: active.orderId, lat: ping.lat, lng: ping.lng, ts });
       })().catch((err) => logger.warn({ err }, "location:update handling failed"));
     });
 

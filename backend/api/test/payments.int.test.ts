@@ -238,6 +238,11 @@ describe("POST /v1/webhooks/razorpay", () => {
     expect(updated?.paymentStatus).toBe("FAILED");
     // Stock fully restored.
     expect((await prisma.product.findUnique({ where: { id: p.id } }))?.stockQty).toBe(30);
+    // The customer is notified of the payment-failure cancellation (§7.2, like every
+    // other CANCELLED path incl. the payment-timeout handler).
+    expect(
+      await prisma.notification.count({ where: { userId: updated!.userId, type: "ORDER_CANCELLED" } }),
+    ).toBe(1);
   });
 });
 

@@ -2,16 +2,24 @@
 
 import { use, useEffect } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import type { OrderStatus, TrackOrderResult } from "@medrush/contracts";
 import { api } from "@/lib/api";
+import { whatsappUrl } from "@/lib/env";
 import { useAuth } from "@/lib/auth";
 import { useOrderLive } from "@/lib/socket";
 import { timeAgo } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { TopBar } from "@/components/AppShell";
-import { Card, ErrorState, OrderStatusBadge, Spinner } from "@/components/ui";
+import { Button, Card, ErrorState, OrderStatusBadge, Spinner } from "@/components/ui";
+
+/** Code-split the MapLibre map — it is browser-only and heavy (§11), so never SSR it. */
+const TrackMap = dynamic(() => import("@/components/TrackMap").then((m) => m.TrackMap), {
+  ssr: false,
+  loading: () => <div className="h-full w-full animate-pulse bg-surface-2" />,
+});
 
 /** Happy-path timeline shown as a vertical stepper. */
 const HAPPY_PATH = ["PLACED", "PACKING", "READY", "ASSIGNED", "PICKED_UP", "DELIVERED"] as const;
@@ -63,8 +71,8 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
     queryKey: ["order-track", id],
     queryFn: () => api.get<TrackOrderResult>(`/v1/orders/${id}/track`),
     enabled: Boolean(user),
-    // Polling fallback for when the socket is down (§7.3, 3–5s cadence).
-    refetchInterval: 5000,
+    // Polling fallback (§7.3): poll fast while the socket is down, back off when live.
+    refetchInterval: connected ? 15000 : 4000,
   });
 
   if (loading || !user) {
@@ -78,6 +86,9 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
   const track = trackQuery.data?.data;
   const idx = track ? currentStepIndex(track.status) : -1;
   const cancelled = track?.status === "CANCELLED";
+  const driverPoint = track?.driverLocation
+    ? { lat: track.driverLocation.lat, lng: track.driverLocation.lng }
+    : null;
 
   return (
     <div>
@@ -95,6 +106,16 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
           </div>
         ) : (
           <>
+            {/* Live map — store/destination anchors + the moving driver (§18.1). */}
+            {!cancelled && (
+              <div className="h-[260px] overflow-hidden rounded-card border border-line">
+                <TrackMap store={track.store} destination={track.destination} driver={driverPoint} />
+              </div>
+            )}
+
+            {/* ETA banner */}
+            {!cancelled && <EtaBanner status={track.status} etaMinutes={track.etaMinutes} />}
+
             <div className="flex items-center justify-between gap-2">
               <p className="text-sm text-ink-600">Current status</p>
               <OrderStatusBadge status={track.status} />
@@ -172,38 +193,76 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
               </ol>
             </Card>
 
-            {track.driverLocation ? (
+            {/* Driver card — name / vehicle / Call (present once ASSIGNED). */}
+            {track.driver && (
               <Card className="p-4">
-                <p className="text-xs font-medium uppercase tracking-wide text-ink-400">
-                  Driver location
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-400">
+                  Delivery partner
                 </p>
-                <p className="mt-1 text-sm tabular-nums text-ink-900">
-                  {track.driverLocation.lat.toFixed(5)}, {track.driverLocation.lng.toFixed(5)}
-                </p>
-                <p className="text-xs text-ink-600">
-                  updated {timeAgo(track.driverLocation.ts)}
-                </p>
-                <p className="mt-2 text-xs text-ink-400">Live map coming soon.</p>
-              </Card>
-            ) : (
-              <Card className="p-4">
-                <p className="text-sm text-ink-600">
-                  The rider&rsquo;s location will appear here once your order is on the way.
-                </p>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-ink-900">
+                      {track.driver.name ?? "Assigned"}
+                    </p>
+                    <p className="text-xs text-ink-600">
+                      {track.driver.vehicleType}
+                      {track.driver.vehicleNo ? ` · ${track.driver.vehicleNo}` : ""}
+                    </p>
+                    {track.driverLocation && (
+                      <p className="mt-0.5 text-xs text-ink-400">
+                        Live · updated {timeAgo(track.driverLocation.ts)}
+                      </p>
+                    )}
+                  </div>
+                  <a href={`tel:${track.driver.phone}`} className="shrink-0">
+                    <Button variant="secondary">Call</Button>
+                  </a>
+                </div>
               </Card>
             )}
 
-            <Link
-              href={`/orders/${id}`}
-              className="inline-flex w-full items-center justify-center rounded-input border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink-900 hover:bg-surface-2"
-            >
-              View order details
-            </Link>
+            <div className="flex flex-col gap-2">
+              <Link
+                href={`/orders/${id}`}
+                className="inline-flex w-full items-center justify-center rounded-input border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink-900 hover:bg-surface-2"
+              >
+                View order details
+              </Link>
+              <a
+                href={whatsappUrl(`Hi, I need help with my order (${id}).`)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex w-full items-center justify-center rounded-input px-3.5 py-2 text-sm font-medium text-ink-600 hover:bg-surface-2"
+              >
+                Need help? Chat on WhatsApp
+              </a>
+            </div>
           </>
         )}
       </div>
     </div>
   );
+}
+
+/** ETA banner — "Arriving in ~N min", or an accented "Driver arriving" when close. */
+function EtaBanner({ status, etaMinutes }: { status: OrderStatus; etaMinutes: number | null }) {
+  const arriving = status === "PICKED_UP" && (etaMinutes == null || etaMinutes <= 2);
+  if (arriving) {
+    return (
+      <div className="flex items-center gap-2 rounded-card border border-accent/30 bg-accent/10 px-4 py-3">
+        <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-accent" aria-hidden />
+        <p className="text-sm font-semibold text-accent">Driver arriving</p>
+      </div>
+    );
+  }
+  if (etaMinutes != null) {
+    return (
+      <div className="rounded-card border border-primary-600/20 bg-primary-600/5 px-4 py-3">
+        <p className="text-sm font-semibold text-primary-700">Arriving in ~{etaMinutes} min</p>
+      </div>
+    );
+  }
+  return null;
 }
 
 /** Socket connection pill: green “Live” when connected, amber pulse otherwise. */

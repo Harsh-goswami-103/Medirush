@@ -127,6 +127,25 @@ beforeEach(async () => {
 });
 
 describe("POST /v1/ops/orders/:id/rx-review", () => {
+  it("APPROVE is idempotent — a repeat approve writes no duplicate notification/audit", async () => {
+    const { order, customer } = await makeReviewOrder();
+
+    const first = await rxReview(opsHeaders, order.id, { status: "APPROVED" });
+    expect(first.statusCode, first.body).toBe(200);
+    // A retry / double-click: the order is still RX_REVIEW (only rxStatus flipped),
+    // so this must be a no-op, not a second notification + audit + socket emit.
+    const second = await rxReview(opsHeaders, order.id, { status: "APPROVED" });
+    expect(second.statusCode, second.body).toBe(200);
+    expect(second.json().data.rxStatus).toBe("APPROVED");
+
+    expect(
+      await prisma.notification.count({ where: { userId: customer.id, type: "ORDER_RX_APPROVED" } }),
+    ).toBe(1);
+    expect(
+      await prisma.auditLog.count({ where: { entityId: order.id, action: "RX_APPROVED" } }),
+    ).toBe(1);
+  });
+
   it("APPROVE sets rxStatus APPROVED and unblocks start-packing", async () => {
     const { order } = await makeReviewOrder();
 

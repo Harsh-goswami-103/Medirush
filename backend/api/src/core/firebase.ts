@@ -1,3 +1,4 @@
+import type { App } from "firebase-admin/app";
 import type { Auth } from "firebase-admin/auth";
 import { getConfig } from "./config";
 import { AppError } from "./errors";
@@ -11,6 +12,7 @@ import { AppError } from "./errors";
  * this module is never touched.
  */
 
+let app: App | null = null;
 let auth: Auth | null = null;
 
 /** True when the verification chain must use firebase-admin (§8, phase-1 brief). */
@@ -18,8 +20,14 @@ export function isFirebaseConfigured(): boolean {
   return getConfig().FIREBASE_PROJECT_ID !== undefined;
 }
 
-async function getFirebaseAuth(): Promise<Auth> {
-  if (auth) return auth;
+/**
+ * Initialize (once) and return the shared firebase-admin App. Reused by both
+ * token verification (auth) and push messaging (`core/push.ts`) so a single
+ * credentialed app services the whole process. Throws 500 when the FIREBASE_*
+ * keys are only partially configured (an ops error, never a silent degrade).
+ */
+export async function getFirebaseApp(): Promise<App> {
+  if (app) return app;
 
   const config = getConfig();
   if (!config.FIREBASE_PROJECT_ID || !config.FIREBASE_CLIENT_EMAIL || !config.FIREBASE_PRIVATE_KEY) {
@@ -34,10 +42,9 @@ async function getFirebaseAuth(): Promise<Auth> {
 
   // Dynamic import keeps firebase-admin out of the boot path when unused.
   const { cert, getApps, initializeApp } = await import("firebase-admin/app");
-  const { getAuth } = await import("firebase-admin/auth");
 
   const existing = getApps()[0];
-  const app =
+  app =
     existing ??
     initializeApp({
       credential: cert({
@@ -47,8 +54,15 @@ async function getFirebaseAuth(): Promise<Auth> {
         privateKey: config.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
       }),
     });
+  return app;
+}
 
-  auth = getAuth(app);
+async function getFirebaseAuth(): Promise<Auth> {
+  if (auth) return auth;
+
+  // Dynamic import keeps firebase-admin out of the boot path when unused.
+  const { getAuth } = await import("firebase-admin/auth");
+  auth = getAuth(await getFirebaseApp());
   return auth;
 }
 
