@@ -41,7 +41,9 @@ export const authRoutes: FastifyPluginAsync = async (instance) => {
   app.post(
     "/auth/sync",
     {
-      config: { allowUnsynced: true },
+      // Login/sync is an abuse vector — tighter than the global 100/min limiter
+      // (defense-in-depth behind the Cloudflare edge rule of 20/min/IP, §5/§10).
+      config: { allowUnsynced: true, rateLimit: { max: 20, timeWindow: "1 minute" } },
       schema: {
         tags: ["auth"],
         summary: "Upsert user after Firebase login",

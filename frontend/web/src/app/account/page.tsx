@@ -221,6 +221,39 @@ export default function AccountPage() {
           )}
         </Card>
 
+        {/* --------------------------------------------- legal & compliance */}
+        <Card className="p-4">
+          <h2 className="mb-1 text-sm font-semibold text-ink-900">Legal & compliance</h2>
+          <ul className="divide-y divide-line">
+            {[
+              { href: "/legal", label: "Licensing & compliance" },
+              { href: "/privacy", label: "Privacy policy" },
+              { href: "/terms", label: "Terms & conditions" },
+            ].map((l) => (
+              <li key={l.href}>
+                <Link
+                  href={l.href}
+                  className="flex items-center justify-between gap-2 py-2.5 text-sm text-ink-900"
+                >
+                  {l.label}
+                  <svg
+                    viewBox="0 0 24 24"
+                    className="h-4 w-4 text-ink-400"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden
+                  >
+                    <path d="M9 6l6 6-6 6" />
+                  </svg>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Card>
+
         {/* ------------------------------------------------------------ help */}
         <a
           href={whatsappUrl("Hi, I need help with my MedRush order.")}

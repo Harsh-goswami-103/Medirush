@@ -1,5 +1,6 @@
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import type { ErrorCode } from "@medrush/contracts";
+import { captureException } from "./sentry";
 
 /**
  * Application error carrying a contract error code (§7.1 envelope).
@@ -80,6 +81,7 @@ export function errorHandler(
 
   // Unknown → log with request context, never leak internals to the client.
   request.log.error({ err: error }, "unhandled error");
+  captureException(error, { reqId: request.id, method: request.method, url: request.url });
   void reply.code(500).send(errorEnvelope("INTERNAL", "Internal server error"));
 }
 

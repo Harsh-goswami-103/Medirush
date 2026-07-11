@@ -4,10 +4,15 @@ import { disconnectPrisma } from "./core/db";
 import { startJobs, stopJobs } from "./core/jobs";
 import { setShuttingDown } from "./core/lifecycle";
 import { logger } from "./core/logger";
+import { captureException, flushSentry, initSentry } from "./core/sentry";
 import { attachSocket, closeSocket } from "./core/socket";
 
 /** Hard-exit budget for graceful shutdown (§11: 25s). */
 const SHUTDOWN_BUDGET_MS = 25_000;
+
+// Initialise error reporting before anything else so the whole process is covered
+// (no-op unless SENTRY_DSN is set).
+initSentry();
 
 async function start(): Promise<void> {
   const config = getConfig();
@@ -45,6 +50,7 @@ async function start(): Promise<void> {
       await closeSocket(); // 3. emit server:restarting, io.close()
       await stopJobs(); // 4. boss.stop({ graceful: true })
       await disconnectPrisma(); // 5. prisma.$disconnect()
+      await flushSentry(); // 6. flush buffered error events
       logger.info("graceful shutdown complete");
       process.exit(0);
     } catch (error) {
@@ -57,15 +63,15 @@ async function start(): Promise<void> {
   process.on("SIGINT", () => void shutdown("SIGINT"));
 }
 
-process.on("unhandledRejection", (reason) => {
-  logger.fatal({ err: reason }, "unhandledRejection — exiting");
-  process.exit(1);
-});
+/** Report a fatal crash to Sentry (bounded), then exit non-zero. */
+function crashExit(kind: string, err: unknown): void {
+  logger.fatal({ err }, `${kind} — exiting`);
+  captureException(err, { fatal: kind });
+  void flushSentry(1500).finally(() => process.exit(1));
+}
 
-process.on("uncaughtException", (error) => {
-  logger.fatal({ err: error }, "uncaughtException — exiting");
-  process.exit(1);
-});
+process.on("unhandledRejection", (reason) => crashExit("unhandledRejection", reason));
+process.on("uncaughtException", (error) => crashExit("uncaughtException", error));
 
 start().catch((error: unknown) => {
   logger.fatal({ err: error }, "failed to start api");
