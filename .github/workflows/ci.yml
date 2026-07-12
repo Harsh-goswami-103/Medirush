@@ -1,8 +1,9 @@
 # MedRush CI — BLUEPRINT §22.1.
 # Supply-chain policy (§10.5): every third-party action is pinned to a full commit SHA
 # (trailing comment names the tag the SHA was resolved from via `git ls-remote`).
-# Merge to main requires quality + test + build green. The e2e (Playwright golden path)
-# job is added when the web app lands (Phase 4+) and is non-blocking for the first month.
+# Merge to main requires quality + test + build green. The e2e job (Playwright golden
+# path, promised for Phase 4+) is non-blocking for the first month after launch
+# (continue-on-error) — flip it to blocking once it has a month of green runs.
 name: CI
 
 on:
@@ -102,7 +103,7 @@ jobs:
   build:
     name: Build all packages
     runs-on: ubuntu-latest
-    needs: [quality, test]
+    needs: [quality, test, security]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - name: Enable Corepack (pnpm from package.json packageManager)
@@ -117,3 +118,76 @@ jobs:
         run: pnpm --filter @medrush/api exec prisma generate
       - name: Build (turbo) # api, web, ops — driver app is built by EAS, not CI (§22.1)
         run: pnpm turbo run build
+        env:
+          # web/ops env.ts fail loudly when a production build has no API URL
+          # (so a mis-built artifact can't ship pointing at localhost). CI builds
+          # are never deployed — a placeholder keeps the pipeline green.
+          NEXT_PUBLIC_API_URL: https://ci-placeholder.invalid
+
+  e2e:
+    name: E2E (Playwright golden path)
+    runs-on: ubuntu-latest
+    # Non-blocking for the first month (header note): failures annotate the run
+    # but never gate a merge. Flip to blocking (and add it to build.needs) once
+    # it has a month of green runs.
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: medrush_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medrush_e2e
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Enable Corepack (pnpm from package.json packageManager)
+        run: corepack enable
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Prisma generate (backend/api)
+        run: pnpm --filter @medrush/api exec prisma generate
+      - name: Apply migrations
+        run: pnpm --filter @medrush/api exec prisma migrate deploy
+      - name: Seed demo catalog + users
+        # The spec drives the seeded customer/pharmacist accounts and catalog.
+        run: pnpm --filter @medrush/api db:seed
+      - name: Open the store 24×7
+        # Seeded hours are 08:00–22:00 IST and checkout 422s outside them —
+        # normalise BEFORE the API boots so its 60s StoreConfig cache is never
+        # stale. e2e/global-setup.ts re-runs this idempotently as a belt.
+        run: pnpm --filter @medrush/api exec prisma db execute --file ../../e2e/sql/open-store.sql --schema prisma/schema.prisma
+      - name: Build workspace packages (contracts + ui)
+        # web/ops/api import @medrush/contracts (+ web/ops @medrush/ui) from dist.
+        run: pnpm turbo run build --filter=@medrush/contracts --filter=@medrush/ui
+      - name: Start the stack (background)
+        # DEV servers on purpose — production builds tree-shake the dev-token
+        # login the spec drives (NODE_ENV gates in web/ops login pages). The
+        # API runs tsx without watch; e2e/global-setup.ts waits for all three.
+        run: |
+          pnpm --filter @medrush/api exec tsx src/server.ts > /tmp/medrush-api.log 2>&1 &
+          pnpm --filter @medrush/web dev > /tmp/medrush-web.log 2>&1 &
+          pnpm --filter @medrush/ops dev > /tmp/medrush-ops.log 2>&1 &
+      - name: Install Playwright chromium
+        run: npx playwright install chromium --with-deps
+      - name: Run golden-path e2e
+        run: pnpm e2e
+      - name: Server logs (on failure)
+        if: failure()
+        run: |
+          for f in /tmp/medrush-api.log /tmp/medrush-web.log /tmp/medrush-ops.log; do
+            echo "===== $f ====="
+            tail -n 200 "$f" || true
+          done
