@@ -5,6 +5,7 @@ import { io, type Socket } from "socket.io-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { orderRoom, type ServerToClientEvents } from "@medrush/contracts";
 import { API_BASE_URL } from "./env";
+import { getAuthToken } from "./api";
 import { useAuth } from "./auth";
 
 /**
@@ -17,11 +18,16 @@ export function useOrderLive(orderId: string | undefined): { connected: boolean 
   const { token } = useAuth();
   const qc = useQueryClient();
   const [connected, setConnected] = useState(false);
+  // Gate on session presence, not the token VALUE — Firebase ID tokens rotate
+  // hourly and tearing the socket down on every refresh would churn the room.
+  const hasSession = Boolean(token);
 
   useEffect(() => {
-    if (!token || !orderId) return;
+    if (!hasSession || !orderId) return;
     const socket: Socket<ServerToClientEvents> = io(API_BASE_URL, {
-      auth: { token },
+      // Read the bearer at (re)connect time: a reconnect after >1h must present
+      // the refreshed token, not the one captured when the socket was created.
+      auth: (cb) => cb({ token: getAuthToken() }),
       transports: ["websocket"],
     });
     const invalidateOrder = () => {
@@ -52,7 +58,7 @@ export function useOrderLive(orderId: string | undefined): { connected: boolean 
       socket.disconnect();
       setConnected(false);
     };
-  }, [token, orderId, qc]);
+  }, [hasSession, orderId, qc]);
 
   return { connected };
 }

@@ -3,9 +3,19 @@
 import { use, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { OpsOrderDetail, ReadyAllocation } from "@medrush/contracts";
+import type {
+  AdminDriver,
+  DispatchAssignment,
+  OpsCancelOrderBody,
+  OpsOrderDetail,
+  ReadyAllocation,
+  RedispatchResult,
+  UnassignResult,
+} from "@medrush/contracts";
 import { api } from "@/lib/api";
 import { ApiError } from "@/lib/api";
+import { isAdmin, useAuth } from "@/lib/auth";
+import { cn } from "@/lib/cn";
 import { formatDateTime, formatPaise } from "@/lib/format";
 import {
   Badge,
@@ -16,6 +26,27 @@ import {
   RxBadge,
   Spinner,
 } from "@/components/ui";
+import { Field, TextInput } from "@/components/kit";
+import { Modal } from "@/components/modal";
+import { useToast } from "@/components/toast";
+
+/** Human toast for dispatch-action failures — switch on `error.code` (§7.1), never parse messages. */
+function dispatchActionMessage(err: unknown): string {
+  if (!(err instanceof ApiError)) return "Action failed — try again";
+  switch (err.code) {
+    case "CONFLICT":
+    case "INVALID_TRANSITION":
+      // 409 — busy driver, order moved on, or a concurrent change; the server message says which.
+      return err.message || "Order changed — reload and retry";
+    case "FORBIDDEN":
+      // 403 — unverified or blocked driver.
+      return err.message || "This driver cannot take orders";
+    case "NOT_FOUND":
+      return err.message || "Order or driver not found";
+    default:
+      return err.message || "Action failed — try again";
+  }
+}
 
 export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -53,9 +84,78 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     onError,
   });
   const cancel = useMutation({
-    mutationFn: (reason: string) => api.post(`/v1/ops/orders/${id}/cancel`, { reason }),
+    mutationFn: (body: OpsCancelOrderBody) => api.post(`/v1/ops/orders/${id}/cancel`, body),
     onSuccess,
     onError,
+  });
+
+  /* ----- dispatch escape hatches (§9.5) + OTP unlock (§9.7) — toast-driven ----- */
+
+  const toast = useToast();
+  const toastError = (err: unknown) =>
+    toast.push({ type: "error", message: dispatchActionMessage(err) });
+
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [unassignOpen, setUnassignOpen] = useState(false);
+  const [redispatchAfter, setRedispatchAfter] = useState(false);
+  const closeUnassign = () => {
+    setUnassignOpen(false);
+    setRedispatchAfter(false);
+  };
+
+  const assign = useMutation({
+    mutationFn: (driverId: string) =>
+      api.post<DispatchAssignment>(`/v1/ops/orders/${id}/assign`, { driverId }),
+    onSuccess: () => {
+      toast.push({ type: "success", message: "Driver assigned" });
+      setAssignOpen(false);
+      onSuccess();
+    },
+    onError: toastError,
+  });
+
+  const redispatch = useMutation({
+    mutationFn: () => api.post<RedispatchResult>(`/v1/ops/orders/${id}/redispatch`),
+    onSuccess: (res) => {
+      const n = res.data.offersCreated;
+      toast.push({
+        type: n > 0 ? "success" : "info",
+        message:
+          n > 0
+            ? `Re-dispatched — ${n} offer${n === 1 ? "" : "s"} sent to nearby drivers`
+            : "Re-dispatched — no drivers available right now; try a manual assign",
+      });
+      onSuccess();
+    },
+    onError: toastError,
+  });
+
+  const unassign = useMutation({
+    mutationFn: (redispatchNow: boolean) =>
+      api.post<UnassignResult>(`/v1/ops/orders/${id}/unassign`, { redispatch: redispatchNow }),
+    onSuccess: (res) => {
+      const { redispatched, offersCreated } = res.data;
+      toast.push({
+        type: "success",
+        message: !redispatched
+          ? "Driver un-assigned — order is back to READY"
+          : offersCreated > 0
+            ? `Driver un-assigned — re-dispatched, ${offersCreated} offer${offersCreated === 1 ? "" : "s"} sent`
+            : "Driver un-assigned — re-dispatched, but no drivers are available right now",
+      });
+      closeUnassign();
+      onSuccess();
+    },
+    onError: toastError,
+  });
+
+  const resetOtpAttempts = useMutation({
+    mutationFn: () => api.post<{ ok: true }>(`/v1/ops/orders/${id}/reset-otp`),
+    onSuccess: () => {
+      toast.push({ type: "success", message: "Delivery OTP attempts reset — the driver can retry" });
+      onSuccess();
+    },
+    onError: toastError,
   });
 
   if (query.isLoading) {
@@ -69,10 +169,28 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     return <ErrorState message={(query.error as Error)?.message ?? "Order not found"} onRetry={() => query.refetch()} />;
   }
 
-  const busy = rxReview.isPending || startPacking.isPending || markReady.isPending || cancel.isPending;
+  const busy =
+    rxReview.isPending ||
+    startPacking.isPending ||
+    markReady.isPending ||
+    cancel.isPending ||
+    assign.isPending ||
+    redispatch.isPending ||
+    unassign.isPending ||
+    resetOtpAttempts.isPending;
   const canStartPacking = order.status === "PLACED" || (order.status === "RX_REVIEW" && order.rxStatus === "APPROVED");
   const canReady = order.status === "PACKING";
-  const canCancel = ["PLACED", "RX_REVIEW", "PACKING", "READY"].includes(order.status);
+  // Dispatch escape hatches (§9.5): READY with no active delivery can be
+  // manually assigned or re-offered; ASSIGNED (before pickup) can be undone.
+  const canAssign = order.status === "READY" && !order.delivery;
+  const canUnassign = order.status === "ASSIGNED";
+  // §9.7 unlock — active delivery-stage orders only (server 409s otherwise).
+  const canResetOtp = ["READY", "ASSIGNED", "PICKED_UP"].includes(order.status);
+  // Ops may cancel any pre-DELIVERED order (state machine §9.1) — ASSIGNED/
+  // PICKED_UP included, which is where a doorstep COD refusal is recorded.
+  const canCancel = ["PLACED", "RX_REVIEW", "PACKING", "READY", "ASSIGNED", "PICKED_UP"].includes(order.status);
+  const codRefusalEligible =
+    order.paymentMethod === "COD" && ["ASSIGNED", "PICKED_UP"].includes(order.status);
   const inRxReview = order.status === "RX_REVIEW" && order.rxStatus === "PENDING";
 
   // FEFO auto-allocation from the server pre-fill (§9.4); ready is enabled only
@@ -203,8 +321,53 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   {fefoCovers ? "Mark ready (FEFO)" : "Insufficient stock for FEFO"}
                 </Button>
               )}
-              {canCancel && <CancelButton busy={busy} onCancel={(reason) => cancel.mutate(reason)} />}
-              {!canStartPacking && !canReady && !canCancel && !inRxReview && (
+              {canAssign && (
+                <>
+                  <Button
+                    variant="secondary"
+                    className="w-full"
+                    disabled={busy}
+                    onClick={() => setAssignOpen(true)}
+                  >
+                    Assign driver
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    className="w-full"
+                    loading={redispatch.isPending}
+                    disabled={busy && !redispatch.isPending}
+                    onClick={() => redispatch.mutate()}
+                  >
+                    Re-dispatch
+                  </Button>
+                </>
+              )}
+              {canUnassign && (
+                <Button
+                  variant="secondary"
+                  className="w-full"
+                  disabled={busy}
+                  onClick={() => setUnassignOpen(true)}
+                >
+                  Un-assign driver
+                </Button>
+              )}
+              {canResetOtp && (
+                <ResetOtpAction
+                  disabled={busy}
+                  onReset={() => resetOtpAttempts.mutateAsync()}
+                />
+              )}
+              {canCancel && (
+                <CancelButton
+                  busy={busy}
+                  codEligible={codRefusalEligible}
+                  onCancel={(reason, codRefused) =>
+                    cancel.mutate({ reason, ...(codRefused ? { codRefused: true } : {}) })
+                  }
+                />
+              )}
+              {!canStartPacking && !canReady && !canAssign && !canUnassign && !canResetOtp && !canCancel && !inRxReview && (
                 <p className="text-sm text-ink-400">No actions available in this state.</p>
               )}
             </div>
@@ -220,6 +383,25 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             </div>
           </Card>
 
+          {order.delivery && (
+            <Card className="p-4 text-sm">
+              <div className="mb-2 font-medium text-ink-900">Delivery</div>
+              <div className="text-ink-600">
+                {order.delivery.driverName ?? "Driver"} · {order.delivery.driverPhone}
+              </div>
+              <div className="mt-1 text-xs text-ink-400">
+                Accepted {formatDateTime(order.delivery.acceptedAt)}
+                {order.delivery.pickedUpAt && <> · picked up {formatDateTime(order.delivery.pickedUpAt)}</>}
+                {order.delivery.deliveredAt && <> · delivered {formatDateTime(order.delivery.deliveredAt)}</>}
+              </div>
+              {order.delivery.codCollectedPaise !== null && (
+                <div className="mt-1 text-xs text-ink-600">
+                  COD collected: {formatPaise(order.delivery.codCollectedPaise)}
+                </div>
+              )}
+            </Card>
+          )}
+
           <Card className="p-4 text-sm">
             <Row label="Items" value={formatPaise(order.itemsPaise)} />
             <Row label="Delivery" value={formatPaise(order.deliveryPaise)} />
@@ -232,6 +414,219 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             </div>
           </Card>
         </div>
+      </div>
+
+      {/* Mount-on-open so the picker state resets each time. */}
+      {assignOpen && (
+        <AssignDriverModal
+          onClose={() => setAssignOpen(false)}
+          assigning={assign.isPending}
+          onAssign={(driverId) => assign.mutate(driverId)}
+        />
+      )}
+
+      <Modal
+        open={unassignOpen}
+        onClose={closeUnassign}
+        title="Un-assign driver"
+        footer={
+          <>
+            <Button variant="secondary" onClick={closeUnassign}>
+              Keep driver
+            </Button>
+            <Button variant="danger" loading={unassign.isPending} onClick={() => unassign.mutate(redispatchAfter)}>
+              Un-assign
+            </Button>
+          </>
+        }
+      >
+        <p className="mb-3 text-sm text-ink-600">
+          Take this order back from{" "}
+          {order.delivery?.driverName ?? order.delivery?.driverPhone ?? "the driver"}? It returns to
+          READY.
+        </p>
+        <label className="flex items-start gap-2 text-sm text-ink-600">
+          <input
+            type="checkbox"
+            className="mt-0.5 accent-primary-600"
+            checked={redispatchAfter}
+            onChange={(e) => setRedispatchAfter(e.target.checked)}
+          />
+          <span>
+            Re-dispatch immediately
+            <span className="block text-xs text-ink-400">
+              Start a fresh offer wave to nearby drivers right after the un-assign.
+            </span>
+          </span>
+        </label>
+      </Modal>
+    </div>
+  );
+}
+
+/**
+ * Driver picker for the manual assign (§9.5). The fleet roster endpoint
+ * (GET /v1/admin/drivers) is ADMIN-only, so INVENTORY operators degrade to a
+ * manual DriverProfile-id input instead of a picker.
+ */
+function AssignDriverModal({
+  onClose,
+  onAssign,
+  assigning,
+}: {
+  onClose: () => void;
+  onAssign: (driverId: string) => void;
+  assigning: boolean;
+}) {
+  const { user } = useAuth();
+  const admin = isAdmin(user?.role);
+  const [selected, setSelected] = useState("");
+
+  const driversQuery = useQuery({
+    queryKey: ["admin-drivers", "assign-picker"],
+    queryFn: () => api.get<AdminDriver[]>("/v1/admin/drivers"),
+    enabled: admin,
+    staleTime: 15_000,
+  });
+
+  // Degrade for INVENTORY (and any unexpected 403): manual id entry.
+  const listForbidden =
+    !admin || (driversQuery.error instanceof ApiError && driversQuery.error.status === 403);
+
+  const drivers = [...(driversQuery.data?.data ?? [])].sort(
+    (a, b) =>
+      Number(b.isOnline) - Number(a.isOnline) ||
+      Number(b.isVerified) - Number(a.isVerified) ||
+      (a.name ?? a.phone).localeCompare(b.name ?? b.phone),
+  );
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Assign driver"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            loading={assigning}
+            disabled={selected.trim().length === 0}
+            onClick={() => onAssign(selected.trim())}
+          >
+            Assign
+          </Button>
+        </>
+      }
+    >
+      <p className="mb-3 text-sm text-ink-600">
+        Directly assign this order to a driver, skipping the offer waves. The driver must be
+        verified and free of active deliveries.
+      </p>
+      {listForbidden ? (
+        <Field
+          label="Driver ID"
+          hint="The fleet roster is admin-only — paste the driver's profile id from an admin."
+        >
+          <TextInput
+            placeholder="DriverProfile id"
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+          />
+        </Field>
+      ) : driversQuery.isError ? (
+        <ErrorState
+          message={(driversQuery.error as Error).message}
+          onRetry={() => driversQuery.refetch()}
+        />
+      ) : driversQuery.isLoading ? (
+        <div className="flex justify-center py-8">
+          <Spinner className="h-5 w-5 text-primary-600" />
+        </div>
+      ) : drivers.length === 0 ? (
+        <p className="py-4 text-center text-sm text-ink-400">No drivers on the roster yet.</p>
+      ) : (
+        <ul className="space-y-1">
+          {drivers.map((d) => {
+            const selectable = d.isVerified && !d.isBlocked;
+            return (
+              <li key={d.id}>
+                <label
+                  className={cn(
+                    "flex items-center gap-3 rounded-input border px-3 py-2",
+                    selected === d.id ? "border-primary-600 bg-primary-600/10" : "border-line",
+                    selectable ? "cursor-pointer" : "opacity-60",
+                    selectable && selected !== d.id && "hover:bg-surface-2",
+                  )}
+                >
+                  <input
+                    type="radio"
+                    name="assign-driver"
+                    className="accent-primary-600"
+                    disabled={!selectable}
+                    checked={selected === d.id}
+                    onChange={() => setSelected(d.id)}
+                  />
+                  <span className="flex-1 text-sm">
+                    <span className="font-medium text-ink-900">{d.name ?? d.phone}</span>
+                    <span className="ml-1.5 text-xs text-ink-400">{d.phone}</span>
+                  </span>
+                  <Badge tone={d.isOnline ? "green" : "neutral"}>
+                    {d.isOnline ? "Online" : "Offline"}
+                  </Badge>
+                  {!d.isVerified && <Badge tone="amber">Unverified</Badge>}
+                  {d.isBlocked && <Badge tone="red">Blocked</Badge>}
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Modal>
+  );
+}
+
+/** Two-step inline confirm for the §9.7 OTP-attempts unlock (small, low-traffic action). */
+function ResetOtpAction({
+  disabled,
+  onReset,
+}: {
+  disabled: boolean;
+  onReset: () => Promise<unknown>;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [pending, setPending] = useState(false);
+
+  if (!confirming) {
+    return (
+      <Button variant="ghost" className="w-full" disabled={disabled} onClick={() => setConfirming(true)}>
+        Reset delivery OTP attempts
+      </Button>
+    );
+  }
+  return (
+    <div className="space-y-2 rounded-input border border-line bg-surface-2 p-2">
+      <p className="text-xs text-ink-600">
+        Zero the wrong-OTP counter so the driver can retry the delivery confirmation?
+      </p>
+      <div className="flex gap-2">
+        <Button variant="secondary" className="flex-1" disabled={pending} onClick={() => setConfirming(false)}>
+          Keep
+        </Button>
+        <Button
+          className="flex-1"
+          loading={pending}
+          onClick={() => {
+            setPending(true);
+            void onReset()
+              .then(() => setConfirming(false))
+              .catch(() => undefined) // toast comes from the mutation's onError
+              .finally(() => setPending(false));
+          }}
+        >
+          Reset
+        </Button>
       </div>
     </div>
   );
@@ -321,9 +716,19 @@ function RxReviewPanel({
   );
 }
 
-function CancelButton({ busy, onCancel }: { busy: boolean; onCancel: (reason: string) => void }) {
+function CancelButton({
+  busy,
+  codEligible,
+  onCancel,
+}: {
+  busy: boolean;
+  /** COD order at ASSIGNED/PICKED_UP — the only window a doorstep refusal can be recorded (§10.3). */
+  codEligible: boolean;
+  onCancel: (reason: string, codRefused: boolean) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
+  const [codRefused, setCodRefused] = useState(false);
   if (!open) {
     return (
       <Button variant="ghost" className="w-full text-danger" onClick={() => setOpen(true)}>
@@ -340,6 +745,23 @@ function CancelButton({ busy, onCancel }: { busy: boolean; onCancel: (reason: st
         value={reason}
         onChange={(e) => setReason(e.target.value)}
       />
+      {codEligible && (
+        <label className="flex items-start gap-2 text-xs text-ink-600">
+          <input
+            type="checkbox"
+            className="mt-0.5 accent-primary-600"
+            checked={codRefused}
+            onChange={(e) => setCodRefused(e.target.checked)}
+          />
+          <span>
+            Customer refused COD delivery at the door
+            <span className="block text-ink-400">
+              Counts toward the customer&rsquo;s COD auto-disable limit — tick only for a genuine
+              doorstep refusal.
+            </span>
+          </span>
+        </label>
+      )}
       <div className="flex gap-2">
         <Button variant="secondary" className="flex-1" onClick={() => setOpen(false)}>
           Keep
@@ -349,7 +771,7 @@ function CancelButton({ busy, onCancel }: { busy: boolean; onCancel: (reason: st
           className="flex-1"
           loading={busy}
           disabled={reason.trim().length < 3}
-          onClick={() => onCancel(reason.trim())}
+          onClick={() => onCancel(reason.trim(), codEligible && codRefused)}
         >
           Confirm
         </Button>

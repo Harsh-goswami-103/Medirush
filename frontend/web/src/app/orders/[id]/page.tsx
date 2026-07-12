@@ -11,11 +11,14 @@ import type {
   OrderStatus,
   PaymentStatus,
   Prescription,
+  RetryPaymentResult,
 } from "@medrush/contracts";
-import { api, ApiError } from "@/lib/api";
+import { api, ApiError, apiErrorMessage } from "@/lib/api";
 import { API_BASE_URL, whatsappUrl } from "@/lib/env";
 import { useAuth } from "@/lib/auth";
+import { useStore } from "@/lib/store";
 import { useOrderLive } from "@/lib/socket";
+import { collectPayment, pollUntilPaid } from "@/lib/payment";
 import { formatDateTime, formatPaise } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { TopBar } from "@/components/AppShell";
@@ -55,10 +58,29 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const qc = useQueryClient();
   const toast = useToast();
   const { user, token, loading: authLoading } = useAuth();
+  const { store } = useStore();
 
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reason, setReason] = useState("");
+  // True while a Razorpay capture was reported but the webhook-driven flip out
+  // of PENDING_PAYMENT hasn't been observed yet — entered by the retry flow
+  // below (poll timeout) or via the one-shot `?confirming=1` marker checkout
+  // sets. Replaces the "Complete payment" card with a confirming state.
+  const [confirmingPayment, setConfirmingPayment] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("confirming") === "1",
+  );
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Consume the one-shot marker so a refresh (or share) doesn't replay it.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("confirming")) {
+      url.searchParams.delete("confirming");
+      window.history.replaceState(null, "", url.pathname + url.search + url.hash);
+    }
+  }, []);
 
   // Keep the detail fresh over the socket (status→READY reveals the OTP live).
   const { connected } = useOrderLive(id);
@@ -72,9 +94,76 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     queryFn: () => api.get<OrderDetail>(`/v1/orders/${id}`),
     enabled: Boolean(user),
     // Polling fallback (§7.3): if the socket is down the OTP/status still refresh
-    // (READY reveals the OTP). Poll fast while disconnected, back off when live.
-    refetchInterval: connected ? 20000 : 4000,
+    // (READY reveals the OTP). Poll fast while disconnected or while a payment
+    // is awaiting webhook confirmation, back off when live.
+    refetchInterval: confirmingPayment ? 2000 : connected ? 20000 : 4000,
   });
+
+  const order = orderQuery.data?.data;
+  // A PREPAID order stuck at PENDING_PAYMENT (customer dismissed the Razorpay
+  // sheet) — offer "Complete payment" instead of stranding them with Cancel only.
+  const awaitingPayment = order?.status === "PENDING_PAYMENT" && order.paymentMethod === "PREPAID";
+
+  // Razorpay handoff re-served by GET /v1/orders/:id/payment (owner-scoped;
+  // PREPAID + PENDING_PAYMENT only). Fetched eagerly for the auto-cancel
+  // countdown (`expiresAt`); 409 = already paid / expired — never retried.
+  const paymentQuery = useQuery({
+    queryKey: ["order-payment", id],
+    queryFn: () => api.get<RetryPaymentResult>(`/v1/orders/${id}/payment`),
+    enabled: Boolean(user) && awaitingPayment && !confirmingPayment,
+    retry: false,
+  });
+
+  const retryPayMut = useMutation({
+    mutationFn: async (): Promise<boolean> => {
+      // Re-fetch the handoff at click time so a stale card (already paid or
+      // auto-cancelled elsewhere) surfaces as a 409 before the sheet opens.
+      const { data } = await api.get<RetryPaymentResult>(`/v1/orders/${id}/payment`);
+      await collectPayment(data.razorpay, {
+        name: store?.name ?? "MedRush",
+        contact: user?.phone,
+      });
+      // True only when the flip out of PENDING_PAYMENT was actually observed.
+      return pollUntilPaid(id);
+    },
+    onSuccess: (paid) => {
+      if (paid) {
+        toast.push({ type: "success", message: "Payment successful" });
+      } else {
+        // Captured but the webhook hasn't landed yet — swap the retry card for
+        // the confirming state (fast order polling above) instead of claiming
+        // success next to a still-pending card.
+        setConfirmingPayment(true);
+      }
+      void qc.invalidateQueries({ queryKey: ["order", id] });
+      void qc.invalidateQueries({ queryKey: ["orders"] });
+    },
+    onError: (e) => {
+      // 409 → the order moved on (paid in another tab / auto-cancelled):
+      // refetch so the page shows the real state instead of a stale retry card.
+      if (e instanceof ApiError && e.status === 409) {
+        void qc.invalidateQueries({ queryKey: ["order", id] });
+        void qc.invalidateQueries({ queryKey: ["order-payment", id] });
+        toast.push({ type: "info", message: e.message });
+        return;
+      }
+      // PAYMENT_UNAVAILABLE (503) → friendly retry copy; server errors carry a
+      // "Support code" (x-request-id). A dismissed sheet lands here too.
+      toast.push({ type: "error", message: apiErrorMessage(e, "Could not start the payment") });
+    },
+  });
+
+  // Stand down the confirming state once the order leaves PENDING_PAYMENT.
+  // Toast only when the paid transition was actually observed — an auto-cancel
+  // that fires while confirming must not read as success.
+  useEffect(() => {
+    if (!confirmingPayment || !order || order.status === "PENDING_PAYMENT") return;
+    setConfirmingPayment(false);
+    if (order.paymentStatus === "PAID") {
+      toast.push({ type: "success", message: "Payment successful" });
+    }
+    void qc.invalidateQueries({ queryKey: ["orders"] });
+  }, [confirmingPayment, order, toast, qc]);
 
   const cancelMut = useMutation({
     mutationFn: () =>
@@ -93,10 +182,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       void qc.invalidateQueries({ queryKey: ["orders"] });
     },
     onError: (e) =>
-      toast.push({
-        type: "error",
-        message: e instanceof ApiError ? e.message : "Could not cancel the order",
-      }),
+      toast.push({ type: "error", message: apiErrorMessage(e, "Could not cancel the order") }),
   });
 
   const uploadMut = useMutation({
@@ -126,11 +212,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       toast.push({ type: "success", message: "Prescription uploaded" });
       void qc.invalidateQueries({ queryKey: ["order", id] });
     },
-    onError: (e) =>
-      toast.push({
-        type: "error",
-        message: e instanceof ApiError ? e.message : "Upload failed",
-      }),
+    onError: (e) => toast.push({ type: "error", message: apiErrorMessage(e, "Upload failed") }),
   });
 
   const invoiceMut = useMutation({
@@ -140,10 +222,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       window.open(res.data.url, "_blank", "noopener,noreferrer");
     },
     onError: (e) =>
-      toast.push({
-        type: "error",
-        message: e instanceof ApiError ? e.message : "Could not fetch the invoice",
-      }),
+      toast.push({ type: "error", message: apiErrorMessage(e, "Could not fetch the invoice") }),
   });
 
   // Auth still resolving, or redirecting an anonymous visitor away.
@@ -154,8 +233,6 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       </div>
     );
   }
-
-  const order = orderQuery.data?.data;
 
   const liveBadge = connected ? (
     <span className="flex items-center gap-1 text-xs font-medium text-success">
@@ -170,6 +247,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   // The invoice number is null until the async invoice job runs post-delivery.
   const invoiceReady = delivered && order?.invoiceNo != null;
   const showActions = cancellable || trackable || invoiceReady;
+  // null when NEXT_PUBLIC_SUPPORT_PHONE is unset — the CTA is hidden then.
+  const supportUrl = order ? whatsappUrl(`Hi, I need help with order ${order.orderNo}.`) : null;
   const showRxUpload =
     order != null &&
     order.requiresRx &&
@@ -212,6 +291,49 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 <p className="mt-1 text-sm text-danger">Reason: {order.cancelReason}</p>
               )}
             </Card>
+
+            {/* Complete payment — PREPAID order stuck at PENDING_PAYMENT (the
+                customer dismissed the Razorpay sheet; the cart is already gone).
+                Once a capture is reported but the webhook hasn't flipped the
+                status yet, a confirming card replaces the retry card so the
+                customer can't be told "successful" next to a pending state. */}
+            {awaitingPayment &&
+              (confirmingPayment ? (
+                <Card className="border-primary-600/30 bg-primary-600/5 p-4">
+                  <p className="flex items-center gap-2 text-sm font-semibold text-primary-700">
+                    <Spinner className="h-4 w-4" />
+                    Payment received — confirming…
+                  </p>
+                  <p className="mt-1 text-sm text-ink-600">
+                    Your payment is being confirmed — this usually takes a few seconds. This page
+                    updates automatically.
+                  </p>
+                </Card>
+              ) : (
+                <Card className="border-warning/30 bg-warning/5 p-4">
+                  <p className="text-sm font-semibold text-warning">Payment pending</p>
+                  <p className="mt-1 text-sm text-ink-600">
+                    This order is reserved but not paid yet.
+                    {paymentQuery.data?.data.expiresAt ? (
+                      <>
+                        {" "}
+                        It will be cancelled automatically in{" "}
+                        <Countdown until={paymentQuery.data.data.expiresAt} /> unless the payment is
+                        completed.
+                      </>
+                    ) : (
+                      <> Complete the payment to get it moving.</>
+                    )}
+                  </p>
+                  <Button
+                    className="mt-3 w-full"
+                    loading={retryPayMut.isPending}
+                    onClick={() => retryPayMut.mutate()}
+                  >
+                    Complete payment · {formatPaise(order.totalPaise)}
+                  </Button>
+                </Card>
+              ))}
 
             {/* Delivery OTP — owner-only, READY+ (server returns null otherwise) */}
             {order.deliveryOtp && (
@@ -395,16 +517,19 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               </div>
             </Section>
 
-            {/* Support — WhatsApp deep-link with the order number pre-filled. */}
-            <a
-              href={whatsappUrl(`Hi, I need help with order ${order.orderNo}.`)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex w-full items-center justify-center gap-2 rounded-input border border-success/30 bg-success/5 px-3.5 py-2 text-sm font-medium text-success hover:bg-success/10"
-            >
-              <WhatsAppIcon />
-              Need help with this order?
-            </a>
+            {/* Support — WhatsApp deep-link with the order number pre-filled.
+                Hidden when no support phone is configured. */}
+            {supportUrl && (
+              <a
+                href={supportUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-input border border-success/30 bg-success/5 px-3.5 py-2 text-sm font-medium text-success hover:bg-success/10"
+              >
+                <WhatsAppIcon />
+                Need help with this order?
+              </a>
+            )}
           </div>
 
           {/* Sticky contextual action bar (clears the tab nav at bottom-16). */}
@@ -477,6 +602,23 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 }
 
 /* --------------------------------------------------------------- helpers */
+
+/** mm:ss ticker to the auto-cancel deadline (retry-payment card). */
+function Countdown({ until }: { until: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const remaining = Math.max(0, Math.floor((new Date(until).getTime() - now) / 1000));
+  const mm = Math.floor(remaining / 60);
+  const ss = String(remaining % 60).padStart(2, "0");
+  return (
+    <span className="font-semibold tabular-nums text-warning">
+      {mm}:{ss}
+    </span>
+  );
+}
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (

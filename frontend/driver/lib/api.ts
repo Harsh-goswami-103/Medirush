@@ -11,10 +11,23 @@ import { API_BASE_URL, APP_VERSION } from "./env";
  * (426 UPGRADE_REQUIRED below the floor), so the header is attached automatically.
  */
 
-/** Bearer token, held in module scope + mirrored to AsyncStorage by the auth layer. */
+/** Bearer token, held in module scope + persisted (SecureStore) by the auth layer. */
 let authToken: string | null = null;
 export function setAuthToken(token: string | null): void {
   authToken = token;
+}
+
+/**
+ * Registered by the auth layer: force-refresh the Firebase ID token (tokens
+ * expire hourly). On a 401 with the ambient token, `request` calls this once
+ * and retries with the fresh bearer — so an in-flight request that races the
+ * hourly expiry recovers instead of bouncing the driver to login.
+ */
+let refreshAuthToken: (() => Promise<string | null>) | null = null;
+export function setAuthTokenRefreshHandler(
+  handler: (() => Promise<string | null>) | null,
+): void {
+  refreshAuthToken = handler;
 }
 
 export class ApiError extends Error {
@@ -45,41 +58,55 @@ interface RequestOptions {
 }
 
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<Envelope<T>> {
-  const token = opts.token !== undefined ? opts.token : authToken;
-  const headers: Record<string, string> = {
-    // The backend floors `/v1/driver/*` on the app version.
-    [APP_VERSION_HEADER]: APP_VERSION,
-  };
-  if (opts.body !== undefined) headers["content-type"] = "application/json";
-  if (token) headers.authorization = `Bearer ${token}`;
-  if (opts.idempotencyKey) headers[IDEMPOTENCY_KEY_HEADER] = opts.idempotencyKey;
+  // An explicit `opts.token` (login flows) is used verbatim — only the ambient
+  // token participates in the 401 → refresh → retry-once path below.
+  const explicitToken = opts.token !== undefined;
+  let token = explicitToken ? opts.token : authToken;
 
-  let res: Response;
-  try {
-    res = await fetch(`${API_BASE_URL}${path}`, {
-      method: opts.method ?? "GET",
-      headers,
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-      signal: opts.signal,
-    });
-  } catch (err) {
-    throw new ApiError("NETWORK", "Could not reach the server", 0, err);
+  for (let attempt = 0; ; attempt++) {
+    const headers: Record<string, string> = {
+      // The backend floors `/v1/driver/*` on the app version.
+      [APP_VERSION_HEADER]: APP_VERSION,
+    };
+    if (opts.body !== undefined) headers["content-type"] = "application/json";
+    if (token) headers.authorization = `Bearer ${token}`;
+    if (opts.idempotencyKey) headers[IDEMPOTENCY_KEY_HEADER] = opts.idempotencyKey;
+
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE_URL}${path}`, {
+        method: opts.method ?? "GET",
+        headers,
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+        signal: opts.signal,
+      });
+    } catch (err) {
+      throw new ApiError("NETWORK", "Could not reach the server", 0, err);
+    }
+
+    const json = (await res.json().catch(() => null)) as
+      | (Envelope<T> & { error?: { code: ErrorCode; message: string; details?: unknown } })
+      | null;
+
+    if (!res.ok || !json) {
+      // Expired Firebase bearer mid-shift: force one refresh and retry once.
+      if (res.status === 401 && attempt === 0 && !explicitToken && refreshAuthToken) {
+        const fresh = await refreshAuthToken().catch(() => null);
+        if (fresh && fresh !== token) {
+          token = fresh;
+          continue;
+        }
+      }
+      const error = json?.error;
+      throw new ApiError(
+        error?.code ?? "INTERNAL",
+        error?.message ?? `Request failed (${res.status})`,
+        res.status,
+        error?.details,
+      );
+    }
+    return json;
   }
-
-  const json = (await res.json().catch(() => null)) as
-    | (Envelope<T> & { error?: { code: ErrorCode; message: string; details?: unknown } })
-    | null;
-
-  if (!res.ok || !json) {
-    const error = json?.error;
-    throw new ApiError(
-      error?.code ?? "INTERNAL",
-      error?.message ?? `Request failed (${res.status})`,
-      res.status,
-      error?.details,
-    );
-  }
-  return json;
 }
 
 /** Query-string builder that drops undefined/empty values. */

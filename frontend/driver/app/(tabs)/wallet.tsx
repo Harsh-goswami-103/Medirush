@@ -2,7 +2,7 @@ import { RefreshControl, ScrollView, View } from "react-native";
 import { useRouter } from "expo-router";
 import { MIN_PAYOUT_PAISE, type TxnType, type WalletTxn } from "@medrush/contracts";
 import { useWallet, useWalletTxns } from "@/lib/queries";
-import { Badge, Button, Card, Divider, EmptyState, Loading, Row, Txt } from "@/components/ui";
+import { Button, Card, Divider, EmptyState, Loading, Row, Txt } from "@/components/ui";
 import { colors, font, space } from "@/lib/theme";
 import { dateTime, rupees } from "@/lib/format";
 

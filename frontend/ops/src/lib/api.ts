@@ -9,10 +9,24 @@ import { API_BASE_URL } from "./env";
  * from `@medrush/contracts`; nothing here is hand-typed.
  */
 
-/** Bearer token, held in module scope + mirrored to localStorage by the auth layer. */
+/** Bearer token (Firebase ID token, or a dev token in local builds), held in module scope by the auth layer. */
 let authToken: string | null = null;
 export function setAuthToken(token: string | null): void {
   authToken = token;
+}
+/** Current bearer — the socket handshake reads this at (re)connect time so it never captures a stale token. */
+export function getAuthToken(): string | null {
+  return authToken;
+}
+
+/**
+ * Registered by the auth layer when Firebase is configured: force-refreshes the
+ * ID token (they expire hourly) so a 401 mid-flight can be replayed once with a
+ * fresh bearer. Returns null when nobody is signed in.
+ */
+let refreshAuthToken: (() => Promise<string | null>) | null = null;
+export function setAuthTokenRefresher(fn: (() => Promise<string | null>) | null): void {
+  refreshAuthToken = fn;
 }
 
 export class ApiError extends Error {
@@ -41,37 +55,54 @@ interface RequestOptions {
 }
 
 async function request<T>(path: string, opts: RequestOptions = {}): Promise<Envelope<T>> {
-  const token = opts.token !== undefined ? opts.token : authToken;
-  let res: Response;
-  try {
-    res = await fetch(`${API_BASE_URL}${path}`, {
-      method: opts.method ?? "GET",
-      headers: {
-        ...(opts.body !== undefined ? { "content-type": "application/json" } : {}),
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-      },
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-      cache: "no-store",
-      signal: opts.signal,
-    });
-  } catch (err) {
-    throw new ApiError("NETWORK", "Could not reach the server", 0, err);
-  }
+  const explicitToken = opts.token !== undefined;
+  let token = explicitToken ? opts.token : authToken;
+  let refreshed = false;
 
-  const json = (await res.json().catch(() => null)) as
-    | (Envelope<T> & { error?: { code: ErrorCode; message: string; details?: unknown } })
-    | null;
+  for (;;) {
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE_URL}${path}`, {
+        method: opts.method ?? "GET",
+        headers: {
+          ...(opts.body !== undefined ? { "content-type": "application/json" } : {}),
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+        cache: "no-store",
+        signal: opts.signal,
+      });
+    } catch (err) {
+      throw new ApiError("NETWORK", "Could not reach the server", 0, err);
+    }
 
-  if (!res.ok || !json) {
-    const error = json?.error;
-    throw new ApiError(
-      error?.code ?? "INTERNAL",
-      error?.message ?? `Request failed (${res.status})`,
-      res.status,
-      error?.details,
-    );
+    // Firebase ID tokens rotate hourly — a 401 on the ambient token usually
+    // means it just expired. Force one refresh and replay the request; explicit
+    // per-call tokens (login-time /v1/me, /v1/auth/sync) are never replayed.
+    if (res.status === 401 && !explicitToken && !refreshed && refreshAuthToken) {
+      refreshed = true;
+      const fresh = await refreshAuthToken().catch(() => null);
+      if (fresh && fresh !== token) {
+        token = fresh;
+        continue;
+      }
+    }
+
+    const json = (await res.json().catch(() => null)) as
+      | (Envelope<T> & { error?: { code: ErrorCode; message: string; details?: unknown } })
+      | null;
+
+    if (!res.ok || !json) {
+      const error = json?.error;
+      throw new ApiError(
+        error?.code ?? "INTERNAL",
+        error?.message ?? `Request failed (${res.status})`,
+        res.status,
+        error?.details,
+      );
+    }
+    return json;
   }
-  return json;
 }
 
 /** Query-string builder that drops undefined/empty values. */
@@ -88,10 +119,17 @@ export function qs(params: Record<string, string | number | boolean | undefined 
  * download — the endpoints require the bearer header, so a plain link won't do.
  */
 export async function downloadFile(path: string, filename: string): Promise<void> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    headers: authToken ? { authorization: `Bearer ${authToken}` } : {},
-    cache: "no-store",
-  });
+  const fetchWith = (bearer: string | null) =>
+    fetch(`${API_BASE_URL}${path}`, {
+      headers: bearer ? { authorization: `Bearer ${bearer}` } : {},
+      cache: "no-store",
+    });
+  let res = await fetchWith(authToken);
+  // Same expired-ID-token replay as request() — reports are long pages to lose.
+  if (res.status === 401 && refreshAuthToken) {
+    const fresh = await refreshAuthToken().catch(() => null);
+    if (fresh) res = await fetchWith(fresh);
+  }
   if (!res.ok) throw new ApiError("INTERNAL", `Download failed (${res.status})`, res.status);
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);

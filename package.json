@@ -11,11 +11,13 @@
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test": "turbo test",
+    "e2e": "playwright test --config e2e/playwright.config.ts",
     "db:migrate": "pnpm --filter @medrush/api db:migrate",
     "db:seed": "pnpm --filter @medrush/api db:seed",
     "db:studio": "pnpm --filter @medrush/api db:studio"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "turbo": "^2.5.0"
   },
   "pnpm": {

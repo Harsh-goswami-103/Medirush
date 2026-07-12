@@ -10,21 +10,19 @@ import type {
   CreateOrderBody,
   CreateOrderResult,
   ErrorCode,
-  OrderDetail,
   PaymentMethod,
-  RazorpayCheckout,
   ServiceabilityResult,
   ValidateCartResult,
 } from "@medrush/contracts";
 import { IDEMPOTENCY_KEY_HEADER } from "@medrush/contracts";
-import { api, ApiError, type Envelope } from "@/lib/api";
+import { api, ApiError, apiErrorMessage, type Envelope } from "@/lib/api";
 import { API_BASE_URL } from "@/lib/env";
 import { useAuth } from "@/lib/auth";
 import { useCart } from "@/lib/cart";
 import { useStore } from "@/lib/store";
 import { formatPaise } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import { devSimulatePayment, razorpayConfigured } from "@/lib/devPayment";
+import { collectPayment, pollUntilPaid } from "@/lib/payment";
 import { Button, Card, EmptyState, ErrorState, Spinner } from "@/components/ui";
 import { Field, TextInput } from "@/components/kit";
 import { TopBar } from "@/components/AppShell";
@@ -64,83 +62,15 @@ async function createOrder(
       error?.code ?? "INTERNAL",
       error?.message ?? `Request failed (${res.status})`,
       res.status,
+      undefined,
+      res.headers.get("x-request-id") ?? undefined,
     );
   }
   return json.data;
 }
 
-/* --------------------------------------------------------------- Razorpay */
-
-interface RazorpayOptions {
-  key: string;
-  order_id: string;
-  amount: number;
-  currency: string;
-  name: string;
-  description?: string;
-  prefill?: { contact?: string };
-  handler: () => void;
-  modal?: { ondismiss?: () => void };
-  theme?: { color?: string };
-}
-
-function loadRazorpayScript(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const w = window as unknown as { Razorpay?: unknown };
-    if (w.Razorpay) return resolve();
-    const script = document.createElement("script");
-    script.src = "https://checkout.razorpay.com/v1/checkout.js";
-    script.onload = () => resolve();
-    script.onerror = () => reject(new ApiError("INTERNAL", "Could not load the payment SDK", 0));
-    document.body.appendChild(script);
-  });
-}
-
-/** Open the real Razorpay Checkout sheet; resolves on capture, rejects on dismiss. */
-async function openRazorpay(rzp: RazorpayCheckout, opts: { name: string; contact?: string }): Promise<void> {
-  await loadRazorpayScript();
-  return new Promise<void>((resolve, reject) => {
-    const Ctor = (window as unknown as { Razorpay?: new (o: RazorpayOptions) => { open: () => void } }).Razorpay;
-    if (!Ctor) {
-      reject(new ApiError("INTERNAL", "Payment SDK unavailable", 0));
-      return;
-    }
-    let settled = false;
-    const rz = new Ctor({
-      key: rzp.rzpKeyId,
-      order_id: rzp.rzpOrderId,
-      amount: rzp.amountPaise,
-      currency: rzp.currency,
-      name: opts.name,
-      description: "Order payment",
-      ...(opts.contact ? { prefill: { contact: opts.contact } } : {}),
-      handler: () => {
-        settled = true;
-        resolve();
-      },
-      modal: {
-        ondismiss: () => {
-          if (!settled) reject(new ApiError("INTERNAL", "Payment cancelled", 0));
-        },
-      },
-      theme: { color: "#0d9488" },
-    });
-    rz.open();
-  });
-}
-
-/** Poll the order until payment clears the webhook (best-effort; ~10s cap). */
-async function pollUntilPaid(orderId: string, token: string): Promise<void> {
-  for (let i = 0; i < 10; i++) {
-    await new Promise((r) => setTimeout(r, 1000));
-    try {
-      const { data } = await api.get<OrderDetail>(`/v1/orders/${orderId}`, { token });
-      if (data.status !== "PENDING_PAYMENT") return;
-    } catch {
-      /* transient — keep polling */
-    }
-  }
-}
+/* Razorpay sheet / dev-stub collection + paid-polling live in lib/payment.ts —
+ * shared with the order-detail "Complete payment" retry flow. */
 
 /* ================================================================ page */
 
@@ -232,14 +162,11 @@ export default function CheckoutPage() {
       toast.push({ type: "success", message: "Address added" });
     },
     onError: (err) =>
-      toast.push({
-        type: "error",
-        message: err instanceof ApiError ? err.message : "Could not save address",
-      }),
+      toast.push({ type: "error", message: apiErrorMessage(err, "Could not save address") }),
   });
 
   const placeOrder = useMutation({
-    mutationFn: async (): Promise<string> => {
+    mutationFn: async (): Promise<{ orderId: string; confirming: boolean }> => {
       if (!token) throw new ApiError("INTERNAL", "You are not signed in", 401);
       if (!selectedAddressId) throw new ApiError("INTERNAL", "Select a delivery address", 400);
       const body: CreateOrderBody = {
@@ -252,30 +179,29 @@ export default function CheckoutPage() {
 
       // Rx orders need pharmacist review before payment — the detail screen owns
       // the Rx upload (and any later payment), so route there straight away.
-      if (result.order.requiresRx) return orderId;
-      if (paymentMethod === "COD") return orderId;
+      if (result.order.requiresRx) return { orderId, confirming: false };
+      if (paymentMethod === "COD") return { orderId, confirming: false };
 
-      // PREPAID, non-Rx → collect payment now.
+      // PREPAID, non-Rx → collect payment now (shared with the retry flow).
       const rzp = result.razorpay;
-      if (!rzp) return orderId; // defensive: server should always attach it
-      if (razorpayConfigured) {
-        await openRazorpay(rzp, { name: store?.name ?? "MedRush", contact: user?.phone });
-      } else {
-        await devSimulatePayment(rzp.rzpOrderId, rzp.amountPaise);
-      }
-      await pollUntilPaid(orderId, token);
-      return orderId;
+      if (!rzp) return { orderId, confirming: false }; // defensive: server should always attach it
+      await collectPayment(rzp, { name: store?.name ?? "MedRush", contact: user?.phone });
+      // False when the ~10s poll never saw the webhook land — captured, but not
+      // yet confirmed; the order page must not present it as pending.
+      const paid = await pollUntilPaid(orderId, token);
+      return { orderId, confirming: !paid };
     },
-    onSuccess: (orderId) => {
+    onSuccess: ({ orderId, confirming }) => {
       void qc.invalidateQueries({ queryKey: ["cart"] });
       void qc.invalidateQueries({ queryKey: ["cart-validate"] });
-      router.push(`/orders/${orderId}`);
+      // `?confirming=1` → the order page shows its "Payment received —
+      // confirming…" state instead of the retry card until the status flips.
+      router.push(confirming ? `/orders/${orderId}?confirming=1` : `/orders/${orderId}`);
     },
+    // PAYMENT_UNAVAILABLE (Razorpay outage, 503) gets a friendly retry message
+    // and server-received failures carry a "Support code" (x-request-id).
     onError: (err) =>
-      toast.push({
-        type: "error",
-        message: err instanceof ApiError ? err.message : "Could not place the order",
-      }),
+      toast.push({ type: "error", message: apiErrorMessage(err, "Could not place the order") }),
   });
 
   /* --------------------------------------------------- address form */

@@ -86,6 +86,8 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
   const track = trackQuery.data?.data;
   const idx = track ? currentStepIndex(track.status) : -1;
   const cancelled = track?.status === "CANCELLED";
+  // null when NEXT_PUBLIC_SUPPORT_PHONE is unset — the CTA is hidden then.
+  const supportUrl = whatsappUrl(`Hi, I need help with my order (${id}).`);
   const driverPoint = track?.driverLocation
     ? { lat: track.driverLocation.lat, lng: track.driverLocation.lng }
     : null;
@@ -228,14 +230,16 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
               >
                 View order details
               </Link>
-              <a
-                href={whatsappUrl(`Hi, I need help with my order (${id}).`)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex w-full items-center justify-center rounded-input px-3.5 py-2 text-sm font-medium text-ink-600 hover:bg-surface-2"
-              >
-                Need help? Chat on WhatsApp
-              </a>
+              {supportUrl && (
+                <a
+                  href={supportUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex w-full items-center justify-center rounded-input px-3.5 py-2 text-sm font-medium text-ink-600 hover:bg-surface-2"
+                >
+                  Need help? Chat on WhatsApp
+                </a>
+              )}
             </div>
           </>
         )}

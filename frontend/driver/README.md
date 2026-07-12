@@ -9,10 +9,10 @@ pick up, navigate, collect COD, complete with OTP, and manage wallet/payouts.
 - **Auth:** dev-login (`dev:<uid>:<phone>`) locally; Firebase phone-OTP is the
   production swap-in (only the token exchange changes)
 
-> ⚠️ **This app has been typechecked (`tsc` clean) but not yet run on a device
-> from this repo.** Build it with EAS or a local Android SDK and iterate — the
-> API it talks to is covered by the backend test suite, so most issues will be
-> UI/native, not contract.
+> ✅ **Device-verified (Phase 6):** the full driver flow has been run on a real
+> Android device from this repo. Note that Sentry native crash reporting and any
+> newly added native modules only activate on the **next EAS build** — a JS-only
+> (OTA/Metro) update does not pick them up.
 
 ---
 

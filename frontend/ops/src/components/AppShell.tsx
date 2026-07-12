@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useOpsAlertsLive, useUnackedAlertBadge } from "@/lib/alerts";
 import { isAdmin, useAuth } from "@/lib/auth";
 import { cn } from "@/lib/cn";
 import { Button } from "@/components/ui";
@@ -11,13 +12,9 @@ interface NavItem {
   href?: string;
   /** Not yet built — shown greyed so the full IA is visible during the build-out. */
   soon?: boolean;
+  /** Small count pill (e.g. unacked alerts). */
+  badge?: string;
 }
-
-const OPS_NAV: NavItem[] = [
-  { label: "Orders", href: "/orders" },
-  { label: "Products", href: "/products" },
-  { label: "Stock", href: "/stock" },
-];
 
 const ADMIN_NAV: NavItem[] = [
   { label: "Dashboard", href: "/admin/dashboard" },
@@ -52,13 +49,18 @@ function NavGroup({ title, items, pathname }: { title: string; items: NavItem[];
               <Link
                 href={item.href}
                 className={cn(
-                  "block rounded-input px-3 py-1.5 text-sm",
+                  "flex items-center justify-between rounded-input px-3 py-1.5 text-sm",
                   active
                     ? "bg-primary-600/10 font-medium text-primary-700"
                     : "text-ink-600 hover:bg-surface-2",
                 )}
               >
                 {item.label}
+                {item.badge && (
+                  <span className="ml-2 inline-flex min-w-5 items-center justify-center rounded-pill bg-danger px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+                    {item.badge}
+                  </span>
+                )}
               </Link>
             </li>
           );
@@ -72,6 +74,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
 
+  // Live alert wiring: the socket hook invalidates the alert queries when an
+  // `alert` lands on the ops room, so the badge (and the /alerts inbox) update
+  // in real time; the badge query itself polls as a reconnect fallback.
+  useOpsAlertsLive();
+  const { count, overflow } = useUnackedAlertBadge();
+
+  const opsNav: NavItem[] = [
+    { label: "Orders", href: "/orders" },
+    {
+      label: "Alerts",
+      href: "/alerts",
+      badge: count > 0 ? (overflow ? "50+" : String(count)) : undefined,
+    },
+    { label: "Products", href: "/products" },
+    { label: "Stock", href: "/stock" },
+  ];
+
   return (
     <div className="flex min-h-dvh">
       <aside className="flex w-60 shrink-0 flex-col border-r border-line bg-surface">
@@ -80,7 +99,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span className="ml-1.5 text-sm text-ink-400">Ops</span>
         </div>
         <nav className="flex-1 space-y-5 overflow-auto px-2 py-2">
-          <NavGroup title="Operations" items={OPS_NAV} pathname={pathname} />
+          <NavGroup title="Operations" items={opsNav} pathname={pathname} />
           {isAdmin(user?.role) && <NavGroup title="Admin" items={ADMIN_NAV} pathname={pathname} />}
         </nav>
         <div className="border-t border-line p-3">

@@ -9,6 +9,10 @@ if (dsn) {
   Sentry.init({
     dsn,
     environment: process.env.NODE_ENV,
+    // Pin events to the deployed commit so stack traces line up with the
+    // published source maps. Only NEXT_PUBLIC_* vars are inlined into browser
+    // bundles, so VERCEL_GIT_COMMIT_SHA is a build-server-only fallback here.
+    release: process.env.NEXT_PUBLIC_COMMIT_SHA ?? process.env.VERCEL_GIT_COMMIT_SHA,
     tracesSampleRate: process.env.NODE_ENV === "production" ? 0.1 : 1.0,
     // Session Replay is opt-in per privacy review — off by default (health data).
     replaysSessionSampleRate: 0,
