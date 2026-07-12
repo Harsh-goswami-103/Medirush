@@ -6,6 +6,7 @@ import {
   AdminListUsersResponseSchema,
   AdminPayoutListQuerySchema,
   AdminUserListQuerySchema,
+  AnonymizeUserResponseSchema,
   ApprovePayoutResponseSchema,
   BlockBodySchema,
   BlockDriverResponseSchema,
@@ -23,7 +24,7 @@ import {
 import { AppError } from "../../core/errors";
 import { blockDriver, listDrivers, verifyDriver, type AdminActor } from "./driverService";
 import { approvePayout, listPayouts, markPayoutPaid, rejectPayout } from "./payoutService";
-import { blockUser, listUsers, setUserRole } from "./userService";
+import { anonymizeUser, blockUser, listUsers, setUserRole } from "./userService";
 
 /**
  * Admin fleet + users (BLUEPRINT §7.2 — role ADMIN only). Driver verify/block,
@@ -146,6 +147,23 @@ export const adminFleetRoutes: FastifyPluginAsync = async (app) => {
     },
     async (request) => ({
       data: await setUserRole(request.params.id, request.body, requireActor(request)),
+    }),
+  );
+
+  typed.post(
+    "/admin/users/:id/anonymize",
+    {
+      config: { roles: ADMIN_ROLES },
+      schema: {
+        tags: ["admin"],
+        summary:
+          "DPDP erasure — scrub PII + delete addresses/devices/cart/notifications; statutory records kept (see docs/runbooks/data-erasure.md)",
+        params: IdParamsSchema,
+        response: { 200: AnonymizeUserResponseSchema },
+      },
+    },
+    async (request) => ({
+      data: await anonymizeUser(request.params.id, requireActor(request)),
     }),
   );
 

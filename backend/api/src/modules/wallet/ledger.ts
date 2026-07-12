@@ -65,6 +65,16 @@ export async function creditWallet(
 }
 
 /**
+ * THE ledger sign convention (§9.6), single source of truth: DEBIT and PAYOUT
+ * subtract; CREDIT and (positive) ADJUSTMENT add. Used by both the in-TX
+ * invariant check below and the nightly drift audit (jobs/driftAudit.ts) — the
+ * two MUST agree or the first ADJUSTMENT row would false-flag drift.
+ */
+export function signOf(txnType: TxnType): 1 | -1 {
+  return txnType === TxnType.DEBIT || txnType === TxnType.PAYOUT ? -1 : 1;
+}
+
+/**
  * §9.6 invariant check: wallet.balancePaise === Σ(credits) − Σ(debits).
  * DEBIT and PAYOUT subtract; CREDIT (and Phase 2 positive ADJUSTMENT) add.
  * Used by tests today and the nightly drift check later — throws on drift.
@@ -81,10 +91,7 @@ export async function assertLedgerInvariant(walletId: string): Promise<void> {
     where: { walletId },
     select: { type: true, amountPaise: true },
   });
-  const ledgerBalance = txns.reduce((sum, txn) => {
-    const sign = txn.type === TxnType.DEBIT || txn.type === TxnType.PAYOUT ? -1 : 1;
-    return sum + sign * txn.amountPaise;
-  }, 0);
+  const ledgerBalance = txns.reduce((sum, txn) => sum + signOf(txn.type) * txn.amountPaise, 0);
 
   if (ledgerBalance !== wallet.balancePaise) {
     throw new Error(

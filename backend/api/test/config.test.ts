@@ -52,13 +52,34 @@ describe("loadConfig", () => {
       "R2_PUBLIC_CDN_URL",
       "OLA_MAPS_API_KEY",
       "SENTRY_DSN",
-      "REVALIDATE_SECRET",
       "BACKUP_GPG_PASSPHRASE",
       "WEB_ORIGIN",
       "OPS_ORIGIN",
     ]) {
       expect(message).toContain(key);
     }
+    // Nothing consumes REVALIDATE_SECRET — it must NOT be forced on operators.
+    expect(message).not.toContain("REVALIDATE_SECRET");
+  });
+
+  it("backup hardening keys are optional with a 60-day retention default", () => {
+    const config = loadConfig({ DATABASE_URL: DB_URL });
+    expect(config.BACKUP_HEARTBEAT_URL).toBeUndefined();
+    expect(config.BACKUP_RETENTION_DAYS).toBe(60);
+    expect(config.BACKUP_R2_BUCKET).toBeUndefined();
+
+    const tuned = loadConfig({
+      DATABASE_URL: DB_URL,
+      BACKUP_HEARTBEAT_URL: "https://uptime.betterstack.com/api/v1/heartbeat/abc",
+      BACKUP_RETENTION_DAYS: "14",
+      BACKUP_R2_BUCKET: "medrush-backups",
+      BACKUP_R2_ACCOUNT_ID: "backup-acct",
+      BACKUP_R2_ACCESS_KEY_ID: "backup-key",
+      BACKUP_R2_SECRET_ACCESS_KEY: "backup-secret",
+    });
+    expect(tuned.BACKUP_HEARTBEAT_URL).toBe("https://uptime.betterstack.com/api/v1/heartbeat/abc");
+    expect(tuned.BACKUP_RETENTION_DAYS).toBe(14);
+    expect(tuned.BACKUP_R2_BUCKET).toBe("medrush-backups");
   });
 
   it("production env with all required keys passes", () => {

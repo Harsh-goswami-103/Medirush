@@ -14,7 +14,7 @@ process.env.DATABASE_URL ??= "postgresql://postgres@localhost:5433/medrush_test"
 delete process.env.FIREBASE_PROJECT_ID;
 
 const { disconnectPrisma, getPrisma } = await import("../src/core/db");
-const { canJoinRoom } = await import("../src/core/socket");
+const { canJoinRoom, resolveSocketIdentity } = await import("../src/core/socket");
 const { setupTestDb } = await import("./helpers/db");
 const { STORE_LAT, STORE_LNG, user } = await import("./helpers/factories");
 
@@ -109,5 +109,44 @@ describe("canJoinRoom — driver rooms", () => {
       driverProfileId: "profile-2",
     };
     expect(await canJoinRoom(data, orderRoom(orderId))).toBe(false);
+  });
+});
+
+describe("resolveSocketIdentity — handshake driver-verification gate (§8.2 regression)", () => {
+  it("an UNVERIFIED driver's socket identity carries NO driverProfileId", async () => {
+    const driverUser = await user("DRIVER");
+    await prisma.driverProfile.create({
+      data: { userId: driverUser.id, isVerified: false },
+    });
+
+    const identity = await resolveSocketIdentity(driverUser.firebaseUid);
+    expect(identity).not.toBeNull();
+    expect(identity?.userId).toBe(driverUser.id);
+    expect(identity?.role).toBe(Role.DRIVER);
+    // Without driverProfileId the socket can neither join its driver room nor
+    // push location:update — the HTTP driver gate, mirrored (§8.2).
+    expect(identity?.driverProfileId).toBeUndefined();
+  });
+
+  it("a VERIFIED driver's socket identity carries driverProfileId", async () => {
+    const driverUser = await user("DRIVER");
+    const profile = await prisma.driverProfile.create({
+      data: { userId: driverUser.id, isVerified: true },
+    });
+
+    const identity = await resolveSocketIdentity(driverUser.firebaseUid);
+    expect(identity?.driverProfileId).toBe(profile.id);
+    // ...and only then may the socket join its own driver room.
+    expect(await canJoinRoom(identity!, driverRoom(profile.id))).toBe(true);
+  });
+
+  it("unknown and blocked uids resolve to null (handshake rejected)", async () => {
+    expect(await resolveSocketIdentity("no-such-uid")).toBeNull();
+
+    const blocked = await user("DRIVER", { isBlocked: true });
+    await prisma.driverProfile.create({
+      data: { userId: blocked.id, isVerified: true },
+    });
+    expect(await resolveSocketIdentity(blocked.firebaseUid)).toBeNull();
   });
 });

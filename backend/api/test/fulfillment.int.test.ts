@@ -361,7 +361,9 @@ describe("fulfillment golden path (COD, PLACED→DELIVERED over HTTP)", () => {
     expect(fifth.statusCode, fifth.body).toBe(422);
     expect(fifth.json().error.code).toBe("OTP_LOCKED");
 
-    // Even the correct OTP is rejected once locked (ops unlock is Phase 2+).
+    // Even the correct OTP is rejected once locked (ops unlock = resetting the
+    // durable Order.otpAttempts column; cross-instance proof in
+    // app-hardening-otp.int.test.ts).
     const sixth = await attempt(otp);
     expect(sixth.statusCode, sixth.body).toBe(422);
     expect(sixth.json().error.code).toBe("OTP_LOCKED");

@@ -328,7 +328,37 @@ const DISTANCE_M = 2400;
 // §9.6: commission = base + perKm × ceil(distanceM/1000) → 2500 + 500 × ceil(2.4) = 4000
 const COMMISSION_PAISE = 2500 + 500 * Math.ceil(DISTANCE_M / 1000);
 
+/**
+ * Destructive-seed guard. This seed deleteMany()s every order, payment,
+ * prescription and wallet txn — it must never touch a real database.
+ * Allowed only when the DATABASE_URL host is local (localhost/127.0.0.1) or
+ * SEED_FORCE_DESTRUCTIVE=yes is set explicitly; NODE_ENV=production always
+ * refuses. Dependency-free on purpose.
+ */
+function assertSafeSeedTarget(): void {
+  if (process.env.NODE_ENV === "production") {
+    console.error(
+      "Seed refused: NODE_ENV=production — this seed wipes orders/payments/prescriptions/wallet txns and must never run in production.",
+    );
+    process.exit(1);
+  }
+  let host = "";
+  try {
+    host = new URL(process.env.DATABASE_URL ?? "").hostname;
+  } catch {
+    // Unparseable/missing DATABASE_URL → host stays "" → refused below.
+  }
+  const isLocalHost = host === "localhost" || host === "127.0.0.1";
+  if (!isLocalHost && process.env.SEED_FORCE_DESTRUCTIVE !== "yes") {
+    console.error(
+      `Seed refused: DATABASE_URL host "${host || "(unparseable)"}" is not localhost/127.0.0.1 — set SEED_FORCE_DESTRUCTIVE=yes only if you really mean to wipe that database.`,
+    );
+    process.exit(1);
+  }
+}
+
 async function main(): Promise<void> {
+  assertSafeSeedTarget();
   console.log("Seeding MedRush dev database…");
 
   // 1 ── wipe volatile rows (FK-safe order) so re-seeding never crashes ─────

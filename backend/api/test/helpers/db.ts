@@ -1,4 +1,5 @@
 import { getPrisma } from "../../src/core/db";
+import { flushOpsAlertWrites } from "../../src/core/realtime";
 
 /**
  * Integration-test database harness (phase-1 brief). Uses a REAL Postgres —
@@ -13,6 +14,7 @@ const DEFAULT_DATABASE_URL = "postgresql://postgres@localhost:5433/medrush_test"
 
 /** Every application table (PascalCase to match Prisma's default table names). */
 const VOLATILE_TABLES = [
+  "OpsAlert",
   "AuditLog",
   "Notification",
   "DeviceToken",
@@ -73,6 +75,20 @@ export function assertTestDatabase(): string {
 /** Truncate every volatile table (single statement, CASCADE + RESTART IDENTITY). */
 export async function setupTestDb(): Promise<void> {
   assertTestDatabase();
+  // Drain fire-and-forget OpsAlert persists (core/realtime.ts) first — a write
+  // landing mid-TRUNCATE can deadlock against the multi-table lock sweep.
+  await flushOpsAlertWrites();
   const tableList = VOLATILE_TABLES.map((t) => `"${t}"`).join(", ");
-  await getPrisma().$executeRawUnsafe(`TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE;`);
+  const sql = `TRUNCATE TABLE ${tableList} RESTART IDENTITY CASCADE;`;
+  // 40P01 (deadlock) is transient — the victim is rolled back cleanly, so a
+  // short retry keeps a rare lock-order collision from failing the whole file.
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await getPrisma().$executeRawUnsafe(sql);
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (attempt >= 3 || !message.includes("40P01")) throw error;
+    }
+  }
 }

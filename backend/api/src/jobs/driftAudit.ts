@@ -1,8 +1,10 @@
 import { AlertKind } from "@medrush/contracts";
 import type PgBoss from "pg-boss";
 import { getPrisma } from "../core/db";
+import { wrapWorker } from "../core/jobs";
 import { logger } from "../core/logger";
 import { emitOpsAlert } from "../core/realtime";
+import { signOf } from "../modules/wallet/ledger";
 
 /**
  * Nightly wallet-ledger drift audit (BLUEPRINT §9.6/§24). The ledger invariant —
@@ -49,7 +51,9 @@ export async function runDriftAudit(): Promise<DriftAuditResult> {
   });
   const expectedByWallet = new Map<string, number>();
   for (const row of sums) {
-    const signed = (row.type === "CREDIT" ? 1 : -1) * (row._sum.amountPaise ?? 0);
+    // ONE sign convention — shared with assertLedgerInvariant (wallet/ledger.ts)
+    // so an ADJUSTMENT row can never false-flag drift here.
+    const signed = signOf(row.type) * (row._sum.amountPaise ?? 0);
     expectedByWallet.set(row.walletId, (expectedByWallet.get(row.walletId) ?? 0) + signed);
   }
 
@@ -94,9 +98,12 @@ export async function registerDriftAudit(boss: PgBoss): Promise<void> {
     logger.warn({ err: error, queue: DRIFT_AUDIT_QUEUE }, "createQueue skipped");
   }
 
-  await boss.work(DRIFT_AUDIT_QUEUE, async () => {
-    await runDriftAudit();
-  });
+  await boss.work(
+    DRIFT_AUDIT_QUEUE,
+    wrapWorker(DRIFT_AUDIT_QUEUE, async () => {
+      await runDriftAudit();
+    }),
+  );
 
   await boss.schedule(DRIFT_AUDIT_QUEUE, DRIFT_AUDIT_CRON, {}, { tz: DRIFT_AUDIT_TZ });
   logger.info({ cron: DRIFT_AUDIT_CRON, tz: DRIFT_AUDIT_TZ }, "drift-audit scheduled");

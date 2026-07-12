@@ -1,18 +1,41 @@
-import { buildApp } from "./app";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { buildApp, type App } from "./app";
 import { getConfig } from "./core/config";
 import { disconnectPrisma } from "./core/db";
 import { startJobs, stopJobs } from "./core/jobs";
 import { setShuttingDown } from "./core/lifecycle";
 import { logger } from "./core/logger";
+import { flushOpsAlertWrites } from "./core/realtime";
 import { captureException, flushSentry, initSentry } from "./core/sentry";
 import { attachSocket, closeSocket } from "./core/socket";
 
 /** Hard-exit budget for graceful shutdown (§11: 25s). */
 const SHUTDOWN_BUDGET_MS = 25_000;
 
-// Initialise error reporting before anything else so the whole process is covered
-// (no-op unless SENTRY_DSN is set).
-initSentry();
+/**
+ * Ordered graceful-shutdown steps (§11). Socket.io closes BEFORE the HTTP
+ * server: Fastify 5's default `forceCloseConnections: 'idle'` never reaps
+ * ACTIVE WebSocket upgrades, so closing the app first left every deploy with a
+ * connected driver/tracking client hanging until the hard-exit budget — and the
+ * `server:restarting` notice never reached them. `closeSocket()` emits the
+ * notice while clients are still connected, then `io.close()` force-closes the
+ * upgraded sockets (and the shared HTTP server, draining in-flight requests);
+ * the later `app.close()` still runs every plugin onClose hook and tolerates
+ * the already-closed listener (ERR_SERVER_NOT_RUNNING is swallowed by fastify).
+ *
+ * Exported so the shutdown-order integration test can drive it directly —
+ * SIGTERM is not reliably deliverable in-process on Windows.
+ */
+export async function runShutdown(app: App): Promise<void> {
+  setShuttingDown(); // 1. /readyz flips 503 → routing stops
+  await closeSocket(); // 2. emit server:restarting, io.close() (WS force-close + HTTP drain)
+  await app.close(); // 3. remaining in-flight HTTP + plugin onClose hooks
+  await stopJobs(); // 4. boss.stop({ graceful: true })
+  await flushOpsAlertWrites(); // 5. drain fire-and-forget OpsAlert persists
+  await disconnectPrisma(); // 6. prisma.$disconnect()
+  await flushSentry(); // 7. flush buffered error events
+}
 
 async function start(): Promise<void> {
   const config = getConfig();
@@ -45,12 +68,7 @@ async function start(): Promise<void> {
     hardExit.unref();
 
     try {
-      setShuttingDown(); // 1. /readyz flips 503 → routing stops
-      await app.close(); // 2. drain in-flight HTTP
-      await closeSocket(); // 3. emit server:restarting, io.close()
-      await stopJobs(); // 4. boss.stop({ graceful: true })
-      await disconnectPrisma(); // 5. prisma.$disconnect()
-      await flushSentry(); // 6. flush buffered error events
+      await runShutdown(app);
       logger.info("graceful shutdown complete");
       process.exit(0);
     } catch (error) {
@@ -70,10 +88,31 @@ function crashExit(kind: string, err: unknown): void {
   void flushSentry(1500).finally(() => process.exit(1));
 }
 
-process.on("unhandledRejection", (reason) => crashExit("unhandledRejection", reason));
-process.on("uncaughtException", (error) => crashExit("uncaughtException", error));
+/**
+ * Boot only when executed as the entrypoint (`node dist/server.js`, `tsx watch
+ * src/server.ts`) — importing this module (shutdown test) must be side-effect
+ * free. Windows paths compare case-insensitively.
+ */
+const isMain = (() => {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const normalize = (p: string): string => {
+    const resolved = path.resolve(p);
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return normalize(entry) === normalize(fileURLToPath(import.meta.url));
+})();
 
-start().catch((error: unknown) => {
-  logger.fatal({ err: error }, "failed to start api");
-  process.exit(1);
-});
+if (isMain) {
+  // Initialise error reporting before anything else so the whole process is
+  // covered (no-op unless SENTRY_DSN is set).
+  initSentry();
+
+  process.on("unhandledRejection", (reason) => crashExit("unhandledRejection", reason));
+  process.on("uncaughtException", (error) => crashExit("uncaughtException", error));
+
+  start().catch((error: unknown) => {
+    logger.fatal({ err: error }, "failed to start api");
+    process.exit(1);
+  });
+}

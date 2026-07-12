@@ -49,14 +49,6 @@ import { creditWallet } from "../wallet/ledger";
 
 const DRIVER_ROLES: Role[] = [Role.DRIVER];
 
-/**
- * Wrong-OTP attempt counter, orderId → count (§9.7: 5 max, then locked).
- * Deliberately in-memory per the Phase 1 brief (scope decision #4): there is
- * no schema column and the ops unlock flow ships Phase 2+ — a process restart
- * clears all counters.
- */
-const otpAttempts = new Map<string, number>();
-
 function requireAuth(request: FastifyRequest): { userId: string } {
   const auth = request.auth;
   if (!auth?.userId) throw new AppError("UNAUTHENTICATED", "Authentication required", 401);
@@ -254,22 +246,28 @@ export const driverRoutes: FastifyPluginAsync = async (app) => {
       // State gate first — OTP attempts are only counted on deliverable orders.
       assertTransition(order.status, OrderStatus.DELIVERED, ActorType.DRIVER);
 
-      // OTP gate (§9.7): 5 wrong attempts lock the order (ops unlock = Phase 2+).
-      const priorAttempts = otpAttempts.get(order.id) ?? 0;
-      if (priorAttempts >= DELIVERY_OTP_MAX_ATTEMPTS) {
+      // OTP gate (§9.7): 5 wrong attempts lock the order. The counter is the
+      // DURABLE `Order.otpAttempts` column — a restart must never refill the
+      // brute-force budget of a 4-digit OTP. Ops unlock = the reset-otp
+      // endpoint writing the column back to 0.
+      if (order.otpAttempts >= DELIVERY_OTP_MAX_ATTEMPTS) {
         throw new AppError("OTP_LOCKED", "Too many wrong OTP attempts — contact ops", 422);
       }
       if (order.deliveryOtp === null || request.body.otp !== order.deliveryOtp) {
-        const attempts = priorAttempts + 1;
-        otpAttempts.set(order.id, attempts);
-        if (attempts >= DELIVERY_OTP_MAX_ATTEMPTS) {
+        // Atomic increment: concurrent wrong attempts each consume budget; the
+        // NEW value decides the lock, so attempt #5 locks even under a race.
+        const bumped = await prisma.order.update({
+          where: { id: order.id },
+          data: { otpAttempts: { increment: 1 } },
+          select: { otpAttempts: true },
+        });
+        if (bumped.otpAttempts >= DELIVERY_OTP_MAX_ATTEMPTS) {
           throw new AppError("OTP_LOCKED", "Too many wrong OTP attempts — contact ops", 422);
         }
         throw new AppError("OTP_INVALID", "Incorrect delivery OTP", 422, {
-          attemptsLeft: DELIVERY_OTP_MAX_ATTEMPTS - attempts,
+          attemptsLeft: DELIVERY_OTP_MAX_ATTEMPTS - bumped.otpAttempts,
         });
       }
-      otpAttempts.delete(order.id);
 
       // COD: the exact order total must be collected (§9.6, §18.2).
       const isCod = order.paymentMethod === PaymentMethod.COD;
@@ -295,6 +293,9 @@ export const driverRoutes: FastifyPluginAsync = async (app) => {
           data: {
             status: OrderStatus.DELIVERED,
             deliveredAt: now,
+            // Correct OTP clears the wrong-attempt budget (same semantics as
+            // the pre-durable in-memory counter).
+            otpAttempts: 0,
             ...(isCod ? { paymentStatus: PaymentStatus.COD_COLLECTED } : {}),
           },
         });

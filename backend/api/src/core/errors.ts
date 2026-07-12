@@ -1,5 +1,6 @@
 import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 import type { ErrorCode } from "@medrush/contracts";
+import { RazorpayTimeoutError } from "./razorpay";
 import { captureException } from "./sentry";
 
 /**
@@ -61,6 +62,17 @@ export function errorHandler(
     void reply
       .code(error.statusCode)
       .send(errorEnvelope(error.code, error.message, error.details));
+    return;
+  }
+
+  // Payment provider deadline (§10): the checkout call was abandoned after its
+  // timeout — an infra failure worth paging on, but retryable for the client.
+  if (error instanceof RazorpayTimeoutError) {
+    request.log.error({ err: error }, "razorpay call timed out");
+    captureException(error, { reqId: request.id, method: request.method, url: request.url });
+    void reply
+      .code(503)
+      .send(errorEnvelope("PAYMENT_UNAVAILABLE", "Payment service is unavailable — try again"));
     return;
   }
 

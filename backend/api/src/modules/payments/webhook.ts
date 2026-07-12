@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import {
   ActorType,
+  AlertKind,
   OrderStatus,
   PaymentStatus,
   type PaymentMethod,
@@ -11,12 +12,13 @@ import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
 import { clearDriverLocation } from "../../core/locationStore";
 import { logger } from "../../core/logger";
-import { emitOrderNew, emitOrderStatus } from "../../core/realtime";
+import { emitOpsAlert, emitOrderNew, emitOrderStatus } from "../../core/realtime";
 import { verifyWebhookSignature } from "../../core/razorpay";
 import { notifyUser } from "../notifications/service";
 import { restockOrder } from "../orders/service";
 import { assertTransition } from "../orders/stateMachine";
 import { cancelPaymentTimeout } from "../../jobs/paymentTimeout";
+import { refundLateCapture } from "./service";
 
 /**
  * Razorpay webhook processor (BLUEPRINT §9.3, §10.1; phase-2 brief §2).
@@ -32,6 +34,16 @@ import { cancelPaymentTimeout } from "../../jobs/paymentTimeout";
  * - unknown event types are recorded and ignored (always 200 — Razorpay retries
  *   on any non-2xx).
  */
+
+/** A capture that landed on an already-CANCELLED order — refund post-commit. */
+interface LateCaptureOutcome {
+  action: "late_capture_refund";
+  orderId: string;
+  orderNo: string;
+  /** Captured payment id (from the event or already on file); null → cannot auto-refund. */
+  rzpPaymentId: string | null;
+  amountPaise: number;
+}
 
 /** What the transaction did, so the caller can fire post-commit side effects. */
 type WebhookOutcome =
@@ -52,6 +64,7 @@ type WebhookOutcome =
     }
   | { action: "cancelled"; orderId: string; userId: string; orderNo: string }
   | { action: "refunded"; orderId: string }
+  | LateCaptureOutcome
   | null;
 
 interface RazorpayEntity {
@@ -151,9 +164,68 @@ export async function processWebhook(
   } else if (outcome?.action === "refunded") {
     // Refund does not change order status; nudge the customer/ops views to refetch.
     emitOrderStatus({ id: outcome.orderId, status: OrderStatus.CANCELLED });
+  } else if (outcome?.action === "late_capture_refund") {
+    await runLateCaptureRefund(outcome);
   }
 
   return { received: true, duplicate: false, handled: outcome ? type : "ignored" };
+}
+
+/**
+ * Post-commit auto-refund of a capture that landed on an already-CANCELLED
+ * order (audit P1 — before this, the captured money had NO code path back to
+ * the customer, since initiateRefund only acts on PAID orders).
+ *
+ * Failures are swallowed DELIBERATELY and the webhook still answers 200: the
+ * PaymentEvent idempotency row for this eventId committed with the capture tx,
+ * so a non-2xx would only make Razorpay redeliver an event that is now a
+ * guaranteed duplicate no-op — a retry can never reach this code again.
+ * Instead of a useless 500, ops is paged durably (MANUAL_REFUND_REQUIRED is a
+ * critical alert kind: OpsAlert row + Sentry page) and the loud log is kept.
+ *
+ * Recovery after a failure is doubly covered: `refundLateCapture` keeps its
+ * REFUND_INITIATED claim (refundId null), so the 5-min stuck-orders sweep
+ * re-drives `initiateRefund` automatically, and whichever refund eventually
+ * lands — the sweep's retry or the ops manual one — its `refund.processed`
+ * completes the order to REFUNDED (that handler treats the gateway as ground
+ * truth and advances from PAID as well as REFUND_INITIATED, so even a sweep
+ * retry that failed definitively and reverted the claim to PAID stays healable).
+ */
+async function runLateCaptureRefund(outcome: LateCaptureOutcome): Promise<void> {
+  const { orderId, orderNo, rzpPaymentId, amountPaise } = outcome;
+  const rupees = (amountPaise / 100).toFixed(2);
+
+  if (!rzpPaymentId) {
+    logger.error(
+      { orderId },
+      "payment captured for a CANCELLED order with no payment id on file — manual refund required",
+    );
+    emitOpsAlert(
+      AlertKind.MANUAL_REFUND_REQUIRED,
+      `Payment captured for cancelled order ${orderNo} but no payment id is on file — refund ₹${rupees} manually`,
+      orderId,
+      { orderNo, amountPaise },
+    );
+    return;
+  }
+
+  try {
+    await refundLateCapture({ orderId, rzpPaymentId, amountPaise });
+    // paymentStatus changed (→ REFUND_INITIATED); nudge customer/ops views to
+    // refetch, same as the refund.processed handler.
+    emitOrderStatus({ id: orderId, status: OrderStatus.CANCELLED });
+  } catch (error) {
+    logger.error(
+      { err: error, orderId, rzpPaymentId },
+      "payment captured for a CANCELLED order — auto-refund FAILED, manual refund required",
+    );
+    emitOpsAlert(
+      AlertKind.MANUAL_REFUND_REQUIRED,
+      `Auto-refund failed for cancelled order ${orderNo} — refund ₹${rupees} manually via the Razorpay dashboard`,
+      orderId,
+      { orderNo, amountPaise, rzpPaymentId },
+    );
+  }
 }
 
 /* ----------------------------------------------------------- event handlers */
@@ -206,11 +278,27 @@ async function handleCaptured(
 
   if (order.status !== OrderStatus.PENDING_PAYMENT) {
     // Timeout already cancelled it, or this is a re-delivery after processing.
-    if (order.status === OrderStatus.CANCELLED && order.paymentStatus !== PaymentStatus.PAID) {
+    if (
+      order.status === OrderStatus.CANCELLED &&
+      (order.paymentStatus === PaymentStatus.PENDING ||
+        order.paymentStatus === PaymentStatus.FAILED)
+    ) {
+      // Late capture racing the cancel: real money was taken for an order that
+      // will never ship, and no other path refunds a non-PAID order. The
+      // refund fires post-commit — the external call must never run inside
+      // this tx (§14). REFUND_INITIATED/REFUNDED pre-states skip this branch:
+      // an earlier delivery (or ops) already owns the refund.
       logger.error(
         { orderId: order.id, rzpPaymentId },
-        "payment captured for a CANCELLED order — manual refund required",
+        "payment captured for a CANCELLED order — auto-initiating refund",
       );
+      return {
+        action: "late_capture_refund",
+        orderId: order.id,
+        orderNo: order.orderNo,
+        rzpPaymentId: rzpPaymentId ?? payment.rzpPaymentId,
+        amountPaise: payment.amountPaise,
+      };
     }
     return null;
   }
@@ -322,11 +410,25 @@ async function handleRefundProcessed(
   }
   const order = payment.order;
 
-  // Idempotent: only a REFUND_INITIATED order advances to REFUNDED.
-  if (order.paymentStatus !== PaymentStatus.REFUND_INITIATED) return null;
+  // The gateway is ground truth: a processed refund means the money HAS left,
+  // whatever our local state says. Advance from REFUND_INITIATED (the normal
+  // claim) AND from PAID — a claim released after a definitive Razorpay error
+  // (or a timed-out call that succeeded late) is refunded manually by ops, and
+  // this event is the ONLY completion signal (the PaymentEvent row consumed
+  // the eventId; Razorpay never redelivers after a 200). Anything else
+  // (already REFUNDED, or PENDING/FAILED pre-capture) is an idempotent no-op.
+  if (
+    order.paymentStatus !== PaymentStatus.PAID &&
+    order.paymentStatus !== PaymentStatus.REFUND_INITIATED
+  ) {
+    return null;
+  }
 
   const updated = await tx.order.updateMany({
-    where: { id: order.id, paymentStatus: PaymentStatus.REFUND_INITIATED },
+    where: {
+      id: order.id,
+      paymentStatus: { in: [PaymentStatus.PAID, PaymentStatus.REFUND_INITIATED] },
+    },
     data: { paymentStatus: PaymentStatus.REFUNDED },
   });
   if (updated.count !== 1) return null;

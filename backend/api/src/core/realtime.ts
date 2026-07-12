@@ -1,3 +1,5 @@
+import * as Sentry from "@sentry/node";
+import type { Prisma } from "@prisma/client";
 import type {
   DriverLocationEvent,
   OfferCancelledEvent,
@@ -6,7 +8,15 @@ import type {
   PaymentMethod,
   RxStatus,
 } from "@medrush/contracts";
-import { OPS_ROOM, RxStatus as RxStatusValues, driverRoom, orderRoom } from "@medrush/contracts";
+import {
+  AlertKind,
+  OPS_ROOM,
+  RxStatus as RxStatusValues,
+  driverRoom,
+  orderRoom,
+} from "@medrush/contracts";
+import { getPrisma } from "./db";
+import { logger } from "./logger";
 import { getIo } from "./socket";
 
 /**
@@ -80,8 +90,79 @@ export function emitOrderNew(order: OrderNewEmitInput): void {
   });
 }
 
-/** `alert` banner/toast to the ops room (watchdogs, fraud rules, …). */
-export function emitOpsAlert(kind: string, msg: string, refId?: string): void {
+/**
+ * Money/data-critical alert kinds: on top of the durable row these page through
+ * Sentry (`captureMessage`, level error) so a 02:30-IST drift or a failed backup
+ * is seen even when no ops tab is open and nobody reads the morning list.
+ */
+export const CRITICAL_ALERT_KINDS: ReadonlySet<string> = new Set([
+  AlertKind.WALLET_DRIFT,
+  AlertKind.DB_BACKUP_FAILED,
+  AlertKind.STUCK_ORDER,
+  AlertKind.MANUAL_REFUND_REQUIRED,
+  AlertKind.UNASSIGNED_ORDER,
+  AlertKind.FRAUD_VELOCITY,
+]);
+
+/**
+ * In-flight OpsAlert persist promises. Tracked so shutdown/tests can drain
+ * them (`flushOpsAlertWrites`) — a dangling write racing a pool disconnect or
+ * a test-suite TRUNCATE is worse than the few bytes this set costs.
+ */
+const pendingAlertWrites = new Set<Promise<unknown>>();
+
+/** Await every in-flight OpsAlert row write (they never reject). */
+export async function flushOpsAlertWrites(): Promise<void> {
+  while (pendingAlertWrites.size > 0) {
+    await Promise.allSettled([...pendingAlertWrites]);
+  }
+}
+
+/**
+ * `alert` banner/toast to the ops room (watchdogs, fraud rules, …) — PLUS a
+ * durable OpsAlert row (§24: a socket emit to an empty room vanishes; the row
+ * feeds GET /v1/ops/alerts) and, for CRITICAL_ALERT_KINDS, a Sentry message.
+ *
+ * Fire-and-forget like every emit helper: the DB write is best-effort async
+ * (callers may be sync/post-commit) and NEVER throws into the caller.
+ */
+export function emitOpsAlert(
+  kind: string,
+  msg: string,
+  refId?: string,
+  meta?: Record<string, unknown>,
+): void {
+  // Durable row — best-effort, never awaited by the caller, never thrown.
+  const write = getPrisma()
+    .opsAlert.create({
+      data: {
+        kind,
+        message: msg,
+        refId: refId ?? null,
+        ...(meta !== undefined ? { meta: meta as Prisma.InputJsonValue } : {}),
+      },
+    })
+    .catch((error: unknown) => {
+      logger.error({ err: error, kind, refId }, "emitOpsAlert: failed to persist OpsAlert row");
+    });
+  pendingAlertWrites.add(write);
+  void write.finally(() => pendingAlertWrites.delete(write));
+
+  // Paging channel for money/data-critical kinds. The raw SDK call is used
+  // because core/sentry's wrapper has no tag support; without `initSentry()`
+  // there is no bound client, so this is a guaranteed no-op in dev/test.
+  if (CRITICAL_ALERT_KINDS.has(kind)) {
+    try {
+      Sentry.captureMessage(msg, {
+        level: "error",
+        tags: { alertKind: kind },
+        extra: refId !== undefined ? { refId, ...meta } : { ...meta },
+      });
+    } catch (error) {
+      logger.warn({ err: error, kind }, "emitOpsAlert: sentry captureMessage failed");
+    }
+  }
+
   const io = getIo();
   if (!io) return;
   io.to(OPS_ROOM).emit("alert", { kind, msg, ...(refId !== undefined ? { refId } : {}) });

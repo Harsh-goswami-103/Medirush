@@ -63,8 +63,12 @@ async function verifySocketToken(token: string): Promise<{ uid: string; phone: s
   throw new Error("UNAUTHENTICATED");
 }
 
-/** Resolve a verified uid to a socket identity, or null when not synced/blocked. */
-async function resolveSocketIdentity(uid: string): Promise<SocketData | null> {
+/**
+ * Resolve a verified uid to a socket identity, or null when not synced/blocked.
+ * Exported for the driver-verification regression test (§8.2): the handshake
+ * must never grant `driverProfileId` to an UNVERIFIED driver.
+ */
+export async function resolveSocketIdentity(uid: string): Promise<SocketData | null> {
   const user = await getPrisma().user.findUnique({
     where: { firebaseUid: uid },
     select: {

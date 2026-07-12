@@ -15,6 +15,8 @@
  * | GET  /v1/admin/users                       | AdminUserListQuerySchema      | AdminUserSchema[] + meta       |
  * | POST /v1/admin/users/:id/block             | BlockBodySchema               | AdminUserSchema                |
  * | POST /v1/admin/users/:id/role              | SetUserRoleBodySchema         | AdminUserSchema                |
+ * | POST /v1/admin/users/:id/anonymize         | IdParams                      | AnonymizeUserResultSchema      |
+ * | GET  /v1/admin/audit-log                   | AuditLogListQuerySchema       | AuditLogEntrySchema[] + meta   |
  * | GET  /v1/admin/coupons                     | CouponListQuerySchema         | CouponSchema[] + meta          |
  * | POST /v1/admin/coupons                     | CreateCouponBodySchema        | CouponSchema                   |
  * | PATCH /v1/admin/coupons/:id                | UpdateCouponBodySchema        | CouponSchema                   |
@@ -107,7 +109,8 @@ export type AdminOrderListQuery = z.infer<typeof AdminOrderListQuerySchema>;
 
 export const AdminOrderSchema = OpsOrderSummarySchema.extend({
   userId: IdSchema,
-  customerPhone: PhoneSchema,
+  /** E.164 — or the `anon:<userId>` tombstone once the customer is erased (orders are retained). */
+  customerPhone: z.string(),
 });
 export type AdminOrder = z.infer<typeof AdminOrderSchema>;
 export const AdminListOrdersResponseSchema = paginatedEnvelope(AdminOrderSchema);
@@ -190,7 +193,8 @@ export const RejectPayoutResponseSchema = envelope(AdminPayoutSchema);
 /** Admin view of a user — includes fraud fields hidden from the customer surface. */
 export const AdminUserSchema = z.object({
   id: IdSchema,
-  phone: PhoneSchema,
+  /** E.164 — or the `anon:<userId>` tombstone after DPDP erasure. */
+  phone: z.string(),
   name: z.string().nullable(),
   email: z.email().nullable(),
   role: RoleSchema,
@@ -221,6 +225,62 @@ export const SetUserRoleBodySchema = z.object({
 });
 export type SetUserRoleBody = z.infer<typeof SetUserRoleBodySchema>;
 export const SetUserRoleResponseSchema = envelope(AdminUserSchema);
+
+/* ------------------------------------------------- DPDP erasure (anonymize) */
+
+/**
+ * POST /v1/admin/users/:id/anonymize — DPDP erasure honoring statutory retention.
+ * Scrubs User PII (phone/firebaseUid → `anon:<userId>` tombstones), deletes
+ * addresses/devices/cart/notifications, blocks the account. Orders, invoices,
+ * payments, prescriptions, wallet and audit records are KEPT (pharmacy/tax law).
+ * Repeat calls → 409 CONFLICT with `details.reason = "ALREADY_ANONYMIZED"`.
+ */
+export const AnonymizeUserDeletedCountsSchema = z.object({
+  addresses: CountSchema,
+  deviceTokens: CountSchema,
+  cartItems: CountSchema,
+  notifications: CountSchema,
+});
+export type AnonymizeUserDeletedCounts = z.infer<typeof AnonymizeUserDeletedCountsSchema>;
+
+export const AnonymizeUserResultSchema = z.object({
+  /** The scrubbed row (name "Deleted user", tombstone phone, isBlocked=true). */
+  user: AdminUserSchema,
+  /** Rows hard-deleted inside the anonymization transaction. */
+  deleted: AnonymizeUserDeletedCountsSchema,
+});
+export type AnonymizeUserResult = z.infer<typeof AnonymizeUserResultSchema>;
+export const AnonymizeUserResponseSchema = envelope(AnonymizeUserResultSchema);
+
+/* -------------------------------------------------------------- audit log */
+
+/** One AuditLog row — the append-only trail behind every sensitive mutation. */
+export const AuditLogEntrySchema = z.object({
+  id: IdSchema,
+  /** User id of the admin/ops actor who performed the action. */
+  actorId: IdSchema,
+  /** Action tag, e.g. "USER_BLOCKED", "PAYOUT_APPROVED", "USER_ANONYMIZED". */
+  action: z.string(),
+  /** Entity type, e.g. "User", "Payout", "Order". */
+  entity: z.string(),
+  entityId: IdSchema,
+  /** Opaque structured context captured at write time; null when none. */
+  meta: z.unknown().nullable(),
+  createdAt: IsoDateTimeSchema,
+});
+export type AuditLogEntry = z.infer<typeof AuditLogEntrySchema>;
+
+/** GET /v1/admin/audit-log — cursor-paginated newest-first; all filters AND-combine. */
+export const AuditLogListQuerySchema = CursorQuerySchema.extend({
+  entity: z.string().trim().min(1).max(60).optional(),
+  entityId: IdSchema.optional(),
+  /** Filter by acting admin/ops user id (AuditLog.actorId). */
+  actorId: IdSchema.optional(),
+  /** Exact action tag, e.g. "USER_ANONYMIZED". */
+  action: z.string().trim().min(1).max(80).optional(),
+});
+export type AuditLogListQuery = z.infer<typeof AuditLogListQuerySchema>;
+export const AdminListAuditLogResponseSchema = paginatedEnvelope(AuditLogEntrySchema);
 
 /* --------------------------------------------------------------- coupons */
 

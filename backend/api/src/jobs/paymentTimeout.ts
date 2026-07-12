@@ -1,6 +1,6 @@
 import type PgBoss from "pg-boss";
 import { PAYMENT_TIMEOUT_MIN } from "@medrush/contracts";
-import { getBoss, isJobsStarted } from "../core/jobs";
+import { getBoss, isJobsStarted, wrapWorker } from "../core/jobs";
 import { logger } from "../core/logger";
 import { expireUnpaidOrder } from "../modules/payments/service";
 
@@ -67,10 +67,13 @@ export async function registerPaymentTimeout(boss: PgBoss): Promise<void> {
     logger.warn({ err: error, queue: PAYMENT_TIMEOUT_QUEUE }, "createQueue skipped");
   }
 
-  await boss.work<PaymentTimeoutJobData>(PAYMENT_TIMEOUT_QUEUE, async (jobs) => {
-    for (const job of jobs) {
-      pendingJobIds.delete(job.data.orderId);
-      await expireUnpaidOrder(job.data.orderId);
-    }
-  });
+  await boss.work<PaymentTimeoutJobData>(
+    PAYMENT_TIMEOUT_QUEUE,
+    wrapWorker(PAYMENT_TIMEOUT_QUEUE, async (jobs) => {
+      for (const job of jobs) {
+        pendingJobIds.delete(job.data.orderId);
+        await expireUnpaidOrder(job.data.orderId);
+      }
+    }),
+  );
 }

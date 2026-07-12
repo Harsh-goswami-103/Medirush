@@ -238,6 +238,7 @@ model Order {
   requiresRx      Boolean       @default(false)
   rxStatus        RxStatus      @default(NA)
   deliveryOtp     String?                         // 4-digit, set at READY
+  otpAttempts     Int           @default(0)       // failed OTP tries (§9.7 lockout — durable counter)
   cancelReason    String?
   invoiceNo       String?       @unique           // MR/25-26/000123 (FY-sequential)
   invoiceKey      String?                         // R2 key of PDF
@@ -271,6 +272,7 @@ model OrderItem {
   requiresRx    Boolean
   qty           Int
   allocations   ItemBatchAlloc[]
+  @@index([orderId])                              // FK lookup (Postgres does not auto-index FKs)
 }
 
 model ItemBatchAlloc {                             // set at packing (FEFO)
@@ -281,6 +283,7 @@ model ItemBatchAlloc {                             // set at packing (FEFO)
   batchNoSnap String
   expirySnap  DateTime  @db.Date
   qty         Int
+  @@index([orderItemId])                          // FK lookup (Postgres does not auto-index FKs)
 }
 
 model OrderEvent {                                 // append-only audit trail
@@ -309,6 +312,7 @@ model Prescription {
   reviewNote   String?
   createdAt    DateTime @default(now())
   reviewedAt   DateTime?
+  @@index([orderId])                              // FK lookup (Postgres does not auto-index FKs)
 }
 
 model DriverProfile {
@@ -354,6 +358,7 @@ model Delivery {                                   // the accepted assignment
   distanceM      Int
   commissionPaise Int?                             // set on DELIVERED
   codCollectedPaise Int?                           // COD orders
+  @@index([driverId])                              // FK lookup (Postgres does not auto-index FKs)
 }
 
 model Wallet {
@@ -505,6 +510,17 @@ model Notification {
   readAt    DateTime?
   createdAt DateTime @default(now())
   @@index([userId, createdAt])
+}
+
+model OpsAlert {                                    // durable ops alerts (§15/§24 — socket emits vanish with no ops tab open)
+  id             String    @id @default(cuid())
+  kind           String                             // AlertKind (open set — see contracts/socket-events)
+  message        String
+  refId          String?                            // usually an orderId / walletId
+  meta           Json?
+  createdAt      DateTime  @default(now())
+  acknowledgedAt DateTime?
+  @@index([acknowledgedAt, createdAt])
 }
 
 model AuditLog {                                    // sensitive admin/ops actions

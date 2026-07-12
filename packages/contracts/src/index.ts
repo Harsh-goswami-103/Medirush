@@ -26,4 +26,6 @@ export * from "./schemas/driver";
 export * from "./schemas/wallet";
 export * from "./schemas/inventory";
 export * from "./schemas/admin";
+export * from "./schemas/alerts";
+export * from "./schemas/dispatch-ops";
 export * from "./socket-events";

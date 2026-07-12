@@ -29,6 +29,45 @@ import { getConfig, type Config } from "./config";
 const DEV_WEBHOOK_SECRET = "dev-webhook-secret";
 /** Public key id surfaced to the client in stub mode (opens Checkout.js in a mock). */
 const STUB_KEY_ID = "rzp_test_stub";
+/** Deadline for real-SDK network calls (§10: a hung provider must not pin checkout). */
+const RAZORPAY_TIMEOUT_MS = 10_000;
+
+/**
+ * A real-SDK call exceeded its deadline. `core/errors.ts` maps this to
+ * 503 PAYMENT_UNAVAILABLE — the client may retry; nothing was committed here
+ * (every call in this module runs OUTSIDE any DB transaction, §14).
+ */
+export class RazorpayTimeoutError extends Error {
+  constructor(op: string) {
+    super(`Razorpay ${op} timed out after ${RAZORPAY_TIMEOUT_MS}ms`);
+    this.name = "RazorpayTimeoutError";
+  }
+}
+
+/**
+ * Race `promise` against the deadline. The razorpay SDK (axios, no timeout
+ * config surfaced) has no abort support, so on timeout the loser is left to
+ * dangle — its eventual settlement is ignored. Exported for the deadline test
+ * (production callers use the default timeout).
+ */
+export async function withRazorpayDeadline<T>(
+  promise: Promise<T>,
+  op: string,
+  timeoutMs = RAZORPAY_TIMEOUT_MS,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new RazorpayTimeoutError(op)), timeoutMs);
+    timer.unref();
+  });
+  try {
+    return await Promise.race([promise, deadline]);
+  } finally {
+    clearTimeout(timer);
+    // Swallow the dangling loser's eventual rejection (unhandledRejection is fatal).
+    promise.catch(() => {});
+  }
+}
 
 /** Real Razorpay is selected only when both key parts are present. */
 function isRealRazorpay(config: Config): boolean {
@@ -86,7 +125,7 @@ export async function createRazorpayOrder(
   const config = getConfig();
   if (isRealRazorpay(config)) {
     const sdk = await getSdk(config);
-    const order = await sdk.createOrder(amountPaise, receipt);
+    const order = await withRazorpayDeadline(sdk.createOrder(amountPaise, receipt), "order create");
     return { id: order.id, amount: order.amount, currency: "INR" };
   }
   return { id: stubId("order_"), amount: amountPaise, currency: "INR" };
@@ -100,7 +139,7 @@ export async function createRazorpayRefund(
   const config = getConfig();
   if (isRealRazorpay(config)) {
     const sdk = await getSdk(config);
-    return sdk.createRefund(paymentId, amountPaise);
+    return withRazorpayDeadline(sdk.createRefund(paymentId, amountPaise), "refund");
   }
   return { id: stubId("rfnd_"), status: "processed" };
 }

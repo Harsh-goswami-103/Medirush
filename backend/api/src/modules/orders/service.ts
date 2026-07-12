@@ -12,6 +12,7 @@ import {
   MAX_ORDERS_PER_HOUR,
   NEW_ACCOUNT_COD_CAP_PAISE,
   OrderStatus,
+  PAYMENT_TIMEOUT_MIN,
   PaymentMethod,
   PaymentStatus,
   RiskFlag,
@@ -29,6 +30,7 @@ import {
   type OrderListQuery,
   type OrderSummary,
   type Prescription,
+  type RetryPaymentResult,
   type TrackOrderResult,
   type TrackTimelineEntry,
 } from "@medrush/contracts";
@@ -372,7 +374,9 @@ async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<Cre
   const prisma = getPrisma();
   const { storeConfig, address, distanceM, lineItems, totals, requiresRx, couponRow, cart } = ctx;
 
-  // 6) COD gates (§10.3) then velocity rule (§10.3).
+  // 6) COD gates (§10.3) then velocity rule (§10.3). These pre-TX checks are a
+  // fast-fail optimisation only — the authoritative re-check runs INSIDE the
+  // transaction under the User row lock (assertFraudGatesInTx).
   await assertCodAllowed(userId, totals.totalPaise, storeConfig.codLimitPaise);
   await assertVelocity(userId);
 
@@ -380,6 +384,10 @@ async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<Cre
   // covers the row-lock contention exercised by the parallel stock-race test.
   const orderId = await prisma.$transaction(
     async (tx) => {
+      // Authoritative fraud gates first (§10.3 TOCTOU fix) — takes the User row
+      // lock, so same-account checkouts serialise before any stock is touched.
+      await assertFraudGatesInTx(tx, userId, { totalPaise: totals.totalPaise });
+
       const shortages: { productId: string; requestedQty: number }[] = [];
       for (const li of lineItems) {
         const affected = await tx.$executeRaw`
@@ -537,7 +545,8 @@ async function createPrepaidOrder(userId: string, ctx: CheckoutContext): Promise
   const prisma = getPrisma();
   const { address, distanceM, lineItems, totals, requiresRx, couponRow, cart } = ctx;
 
-  // Velocity rule (§10.3) — applies to every checkout, prepaid included.
+  // Velocity rule (§10.3) — applies to every checkout, prepaid included. Fast
+  // fail only; the authoritative re-check runs in-TX (assertFraudGatesInTx).
   await assertVelocity(userId);
 
   // Razorpay order created BEFORE the tx (external, §14). Keeping the DB mutation
@@ -548,6 +557,10 @@ async function createPrepaidOrder(userId: string, ctx: CheckoutContext): Promise
 
   const orderId = await prisma.$transaction(
     async (tx) => {
+      // Authoritative velocity re-check under the User row lock (§10.3 TOCTOU
+      // fix) — the first-order COD cap does not apply to PREPAID.
+      await assertFraudGatesInTx(tx, userId);
+
       await reserveStockOrThrow(tx, lineItems);
 
       const user = await tx.user.findUniqueOrThrow({
@@ -741,32 +754,49 @@ async function assertCodAllowed(
     );
   }
 
-  // New-account guard: the first ever order is COD-capped (§10.3). CANCELLED
-  // orders don't count — otherwise a throwaway placed-then-cancelled order would
-  // lift the cap for the "real" first order.
-  const priorOrders = await prisma.order.count({
+  // New-account guard: the first ever order is COD-capped (§10.3).
+  await assertFirstOrderCodCap(userId, totalPaise);
+}
+
+/**
+ * New-account guard (§10.3): the first ever order is COD-capped. CANCELLED
+ * orders don't count — otherwise a throwaway placed-then-cancelled order would
+ * lift the cap for the "real" first order. Runs pre-TX (fast fail, default
+ * client) AND in-TX under the User row lock (authoritative — pass `db`).
+ */
+async function assertFirstOrderCodCap(
+  userId: string,
+  totalPaise: number,
+  db: Prisma.TransactionClient = getPrisma(),
+): Promise<void> {
+  const priorOrders = await db.order.count({
     where: { userId, status: { not: OrderStatus.CANCELLED } },
   });
-  if (priorOrders === 0) {
-    const cap = await getFlag<number>("new_account_cod_cap", NEW_ACCOUNT_COD_CAP_PAISE);
-    if (totalPaise > cap) {
-      throw new AppError(
-        "COD_LIMIT_EXCEEDED",
-        `Your first cash-on-delivery order is limited to ₹${(cap / 100).toFixed(
-          2,
-        )} — please pay online for higher amounts`,
-        422,
-        { totalPaise, newAccountCapPaise: cap },
-      );
-    }
+  if (priorOrders > 0) return;
+  const cap = await getFlag<number>("new_account_cod_cap", NEW_ACCOUNT_COD_CAP_PAISE);
+  if (totalPaise > cap) {
+    throw new AppError(
+      "COD_LIMIT_EXCEEDED",
+      `Your first cash-on-delivery order is limited to ₹${(cap / 100).toFixed(
+        2,
+      )} — please pay online for higher amounts`,
+      422,
+      { totalPaise, newAccountCapPaise: cap },
+    );
   }
 }
 
 /** Velocity rule (§10.3): >3 orders/hour/user → 429 + ops alert (no order to
- * hang an OrderEvent on, so the hit lands as a FRAUD_VELOCITY ops alert + log). */
-async function assertVelocity(userId: string): Promise<void> {
+ * hang an OrderEvent on, so the hit lands as a FRAUD_VELOCITY ops alert + log).
+ * Runs pre-TX (fast fail, default client) AND in-TX under the User row lock
+ * (authoritative — pass `db`). `emitOpsAlert` persists via the ROOT client,
+ * fire-and-forget, so an in-TX trip keeps its alert row after the rollback. */
+async function assertVelocity(
+  userId: string,
+  db: Prisma.TransactionClient = getPrisma(),
+): Promise<void> {
   const since = new Date(Date.now() - 60 * 60 * 1000);
-  const recent = await getPrisma().order.count({
+  const recent = await db.order.count({
     where: { userId, createdAt: { gte: since } },
   });
   if (recent >= MAX_ORDERS_PER_HOUR) {
@@ -779,6 +809,30 @@ async function assertVelocity(userId: string): Promise<void> {
       limit: MAX_ORDERS_PER_HOUR,
     });
   }
+}
+
+/**
+ * Authoritative fraud-gate enforcement — runs INSIDE the order-create
+ * transaction (mirrors `assertCouponRedeemableInTx`). The pre-TX
+ * `assertVelocity` / `assertCodAllowed` counts are a fast-fail optimisation but
+ * race (check-then-insert TOCTOU): N parallel checkouts from one account can
+ * each read a passing count before any of them commits, collectively exceeding
+ * the 3-orders/hour velocity rule or the first-order COD cap. Here we
+ * `SELECT … FOR UPDATE` the User row so all concurrent checkouts from the same
+ * account serialise on it, then re-count under the lock — a loser sees the
+ * committed orders and rolls back (releasing anything reserved after this
+ * point; it runs FIRST in the tx, so normally nothing is). Throws the same
+ * error codes/envelopes as the pre-TX checks.
+ */
+async function assertFraudGatesInTx(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  cod?: { totalPaise: number },
+): Promise<void> {
+  // Row lock held until the transaction commits/rolls back; blocks competing txns.
+  await tx.$queryRaw`SELECT 1 FROM "User" WHERE "id" = ${userId} FOR UPDATE`;
+  await assertVelocity(userId, tx);
+  if (cod) await assertFirstOrderCodCap(userId, cod.totalPaise, tx);
 }
 
 interface CouponRow {
@@ -876,6 +930,54 @@ export async function getOrder(userId: string, role: Role, id: string): Promise<
     throw new AppError("NOT_FOUND", "Order not found", 404);
   }
   return toOrderDetail(order, order.userId === userId);
+}
+
+/**
+ * GET /v1/orders/:id/payment — re-serve the Razorpay checkout handoff for an
+ * owned PREPAID order still at PENDING_PAYMENT. The customer dismissed the
+ * sheet and navigated away: the cart was already consumed by the create TX, so
+ * without this the order is stranded (detail shows only "Cancel"). Returns the
+ * SAME rzpOrderId minted at create — a Razorpay order stays payable until it is
+ * paid or expires — plus the auto-cancel deadline (createdAt + §9.3 payment
+ * timeout) for the client countdown. Owner-scoped 404 (IDOR convention);
+ * 409 CONFLICT for COD orders and for orders no longer awaiting payment.
+ */
+export async function getPaymentHandoff(userId: string, id: string): Promise<RetryPaymentResult> {
+  const order = await getPrisma().order.findUnique({
+    where: { id },
+    select: {
+      userId: true,
+      status: true,
+      paymentMethod: true,
+      totalPaise: true,
+      createdAt: true,
+      payment: { select: { rzpOrderId: true } },
+    },
+  });
+  if (!order || order.userId !== userId) {
+    throw new AppError("NOT_FOUND", "Order not found", 404);
+  }
+  if (order.paymentMethod !== PaymentMethod.PREPAID) {
+    throw new AppError("CONFLICT", "This order has no online payment to retry", 409, {
+      paymentMethod: order.paymentMethod,
+    });
+  }
+  // A PREPAID order gets its Payment row in the create TX, so `payment` is only
+  // null on data corruption — treat it like the not-awaiting-payment conflict.
+  if (order.status !== OrderStatus.PENDING_PAYMENT || !order.payment) {
+    throw new AppError("CONFLICT", "This order is no longer awaiting payment", 409, {
+      status: order.status,
+    });
+  }
+  return {
+    razorpay: {
+      rzpOrderId: order.payment.rzpOrderId,
+      rzpKeyId: razorpayKeyId(),
+      amountPaise: order.totalPaise,
+      currency: "INR",
+    },
+    expiresAt: new Date(order.createdAt.getTime() + PAYMENT_TIMEOUT_MIN * 60_000).toISOString(),
+  };
 }
 
 /** GET /v1/orders — cursor-paginated history for the caller (own only). */

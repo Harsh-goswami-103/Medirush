@@ -1,8 +1,10 @@
 import type { Prisma } from "@prisma/client";
 import {
+  OrderStatus,
   Role,
   type AdminUser,
   type AdminUserListQuery,
+  type AnonymizeUserResult,
   type BlockBody,
   type RiskFlag,
   type SetUserRoleBody,
@@ -227,4 +229,143 @@ export async function setUserRole(
   invalidateUserCache(firebaseUid);
   await syncFirebaseRole(firebaseUid, body.role);
   return loadAdminUser(id);
+}
+
+/* ---------------------------------------------------- DPDP erasure (§ DPDP) */
+
+/**
+ * Tombstone prefix for scrubbed unique columns. `anon:<userId>` is
+ * non-allocatable — not E.164 (colons never appear in phones) and never a real
+ * Firebase uid on this platform — so unique constraints hold, the value can be
+ * recognized forever, and the person's real phone/uid are freed to re-register
+ * as a fresh account.
+ */
+const ANON_PREFIX = "anon:";
+
+/**
+ * POST /v1/admin/users/:id/anonymize — DPDP erasure honoring statutory retention
+ * (docs/runbooks/data-erasure.md).
+ *
+ * One transaction: scrub User PII (name → "Deleted user", email → null,
+ * phone/firebaseUid → `anon:<userId>`), delete addresses + device push tokens +
+ * cart(+items) + notifications, set isBlocked=true (block semantics — live
+ * sessions die at the auth plugin), write AuditLog USER_ANONYMIZED with counts.
+ *
+ * KEPT (statutory pharmacy/tax retention — never touched here): orders, order
+ * items, payments, invoices, prescriptions + stored images, wallet/payout
+ * records, audit logs.
+ *
+ * Guards: 404 unknown id · 409 self · 409 last active admin · 409 DRIVER role
+ * (wallet/payout obligations — offboarding is a separate flow) · 409 any order
+ * in a non-terminal state (in-flight fulfillment needs contact info) · repeat
+ * call → 409 CONFLICT with `details.reason = "ALREADY_ANONYMIZED"` (idempotent-
+ * safe: the first call did all the work; the tombstoned firebaseUid marks it).
+ */
+export async function anonymizeUser(id: string, actor: AdminActor): Promise<AnonymizeUserResult> {
+  const prisma = getPrisma();
+
+  // Lockout guard (mirrors blockUser): an admin cannot erase their own account.
+  if (id === actor.userId) {
+    throw new AppError("CONFLICT", "You cannot anonymize your own account", 409);
+  }
+
+  let firebaseUid = "";
+  let deleted = { addresses: 0, deviceTokens: 0, cartItems: 0, notifications: 0 };
+
+  await prisma.$transaction(async (tx) => {
+    // Lock ordering (AB-BA deadlock guard): the order-create tx locks the User
+    // row FIRST (orders/service.ts assertFraudGatesInTx) and then deletes the
+    // user's CartItems in-tx. Taking the SAME lock first here keeps both
+    // transactions in the same User→CartItem order — without it, the satellite
+    // deletes below vs a concurrent checkout were a classic AB-BA deadlock.
+    // Row lock held until commit/rollback; blocks competing txns.
+    await tx.$queryRaw`SELECT 1 FROM "User" WHERE "id" = ${id} FOR UPDATE`;
+
+    const user = await tx.user.findUnique({
+      where: { id },
+      select: { firebaseUid: true, role: true },
+    });
+    if (!user) throw new AppError("NOT_FOUND", "User not found", 404);
+    firebaseUid = user.firebaseUid;
+
+    // Repeat-call semantics: the tombstoned firebaseUid is the durable marker.
+    if (user.firebaseUid.startsWith(ANON_PREFIX)) {
+      throw new AppError("CONFLICT", "User is already anonymized", 409, {
+        reason: "ALREADY_ANONYMIZED",
+      });
+    }
+
+    // Scope: customer erasure. Drivers carry wallet/payout/ledger obligations
+    // that must be settled first — driver offboarding is a separate flow.
+    if (user.role === Role.DRIVER) {
+      throw new AppError(
+        "CONFLICT",
+        "Driver accounts cannot be anonymized — settle wallet/payout obligations and offboard first",
+        409,
+      );
+    }
+
+    // Lockout guard (mirrors blockUser): the panel must stay operable.
+    if (user.role === Role.ADMIN) {
+      const otherAdmins = await tx.user.count({
+        where: { role: Role.ADMIN, isBlocked: false, id: { not: id } },
+      });
+      if (otherAdmins === 0) {
+        throw new AppError("CONFLICT", "Cannot anonymize the last active admin", 409);
+      }
+    }
+
+    // In-flight fulfillment (anything not DELIVERED/CANCELLED) still needs the
+    // contact info — refuse until every order reaches a terminal state.
+    const inFlight = await tx.order.count({
+      where: { userId: id, status: { notIn: [OrderStatus.DELIVERED, OrderStatus.CANCELLED] } },
+    });
+    if (inFlight > 0) {
+      throw new AppError(
+        "CONFLICT",
+        `User has ${inFlight} order(s) in a non-terminal state — cancel or complete them first`,
+        409,
+      );
+    }
+
+    // Hard-delete the non-statutory PII satellites. CartItem before Cart so the
+    // count is observable (Cart→CartItem is onDelete: Cascade anyway).
+    const addresses = await tx.address.deleteMany({ where: { userId: id } });
+    const deviceTokens = await tx.deviceToken.deleteMany({ where: { userId: id } });
+    const cartItems = await tx.cartItem.deleteMany({ where: { cart: { userId: id } } });
+    await tx.cart.deleteMany({ where: { userId: id } });
+    const notifications = await tx.notification.deleteMany({ where: { userId: id } });
+    deleted = {
+      addresses: addresses.count,
+      deviceTokens: deviceTokens.count,
+      cartItems: cartItems.count,
+      notifications: notifications.count,
+    };
+
+    await tx.user.update({
+      where: { id },
+      data: {
+        name: "Deleted user",
+        email: null,
+        phone: `${ANON_PREFIX}${id}`,
+        firebaseUid: `${ANON_PREFIX}${id}`,
+        isBlocked: true,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        actorId: actor.userId,
+        action: "USER_ANONYMIZED",
+        entity: "User",
+        entityId: id,
+        // Counts + prior role only — no pre-scrub PII may survive in the trail.
+        meta: { role: user.role, deleted },
+      },
+    });
+  });
+
+  // Bust the PRE-scrub uid so live sessions die now, not after the 60s TTL.
+  invalidateUserCache(firebaseUid);
+  return { user: await loadAdminUser(id), deleted };
 }

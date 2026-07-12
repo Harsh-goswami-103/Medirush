@@ -39,6 +39,30 @@ const envSchema = z.object({
   REVALIDATE_SECRET: z.string().min(1).optional(),
   BACKUP_GPG_PASSPHRASE: z.string().min(1).optional(),
 
+  // Backup hardening (Phase 7 §24) — all optional, config-stub posture:
+  // - BACKUP_HEARTBEAT_URL: dead-man's-switch GET after a successful backup.
+  // - BACKUP_RETENTION_DAYS: prune backup objects older than this (default 60).
+  // - BACKUP_R2_*: optional dedicated backup bucket/credentials; each falls back
+  //   to the runtime R2 value when unset (a compromised runtime key must not be
+  //   able to destroy every backup — use a separate key with write-only access).
+  BACKUP_HEARTBEAT_URL: z.url().optional(),
+  BACKUP_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(60),
+  BACKUP_R2_BUCKET: z.string().min(1).optional(),
+  BACKUP_R2_ACCOUNT_ID: z.string().min(1).optional(),
+  BACKUP_R2_ACCESS_KEY_ID: z.string().min(1).optional(),
+  BACKUP_R2_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+
+  // Perimeter / proxy trust (Phase 7 §10 hardening):
+  // - TRUST_PROXY_HOPS: how many proxy hops to trust when deriving request.ip
+  //   from X-Forwarded-For (fastify `trustProxy`). Unset → 1 in production
+  //   (Railway's edge proxy) and fully-trusting `true` in dev/test, preserving
+  //   inject()/localhost behaviour. Trusting the whole chain in production
+  //   would let a client spoof its own XFF prefix past the rate limiter.
+  // - RATE_LIMIT_TRUST_CF_HEADER: once the Cloudflare perimeter exists (CF
+  //   strips/sets CF-Connecting-IP), prefer that header as the rate-limit key.
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(16).optional(),
+  RATE_LIMIT_TRUST_CF_HEADER: z.stringbool().default(false),
+
   // CORS origins (defaulted for local dev; required in production)
   WEB_ORIGIN: z.url().optional(),
   OPS_ORIGIN: z.url().optional(),
@@ -63,7 +87,8 @@ const PROD_REQUIRED_KEYS = [
   "R2_PUBLIC_CDN_URL",
   "OLA_MAPS_API_KEY",
   "SENTRY_DSN",
-  "REVALIDATE_SECRET",
+  // REVALIDATE_SECRET is accepted but optional — nothing consumes it yet, so
+  // operators are not forced to mint a secret that gates nothing.
   "BACKUP_GPG_PASSPHRASE",
   "WEB_ORIGIN",
   "OPS_ORIGIN",
@@ -137,4 +162,9 @@ export function getConfig(): Config {
     cached = loadConfig();
   }
   return cached;
+}
+
+/** Test-only: drop the cached env parse (proxy-trust suites vary the env). */
+export function resetConfigForTests(): void {
+  cached = null;
 }
