@@ -109,6 +109,8 @@ export default function AccountPage() {
   const addresses = addrQuery.data?.data ?? [];
   const profileDirty =
     name.trim() !== (user.name ?? "") || email.trim() !== (user.email ?? "");
+  // null when NEXT_PUBLIC_SUPPORT_PHONE is unset — the CTA is hidden then.
+  const supportUrl = whatsappUrl("Hi, I need help with my MedRush order.");
 
   function confirmDelete(addrId: string) {
     if (typeof window !== "undefined" && !window.confirm("Delete this address?")) return;
@@ -254,16 +256,18 @@ export default function AccountPage() {
           </ul>
         </Card>
 
-        {/* ------------------------------------------------------------ help */}
-        <a
-          href={whatsappUrl("Hi, I need help with my MedRush order.")}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex w-full items-center justify-center gap-2 rounded-input border border-success/30 bg-success/5 px-3.5 py-2 text-sm font-medium text-success hover:bg-success/10"
-        >
-          <WhatsAppIcon />
-          Chat with us on WhatsApp
-        </a>
+        {/* ------------ help (hidden when no support phone is configured) */}
+        {supportUrl && (
+          <a
+            href={supportUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex w-full items-center justify-center gap-2 rounded-input border border-success/30 bg-success/5 px-3.5 py-2 text-sm font-medium text-success hover:bg-success/10"
+          >
+            <WhatsAppIcon />
+            Chat with us on WhatsApp
+          </a>
+        )}
 
         {/* -------------------------------------------------------- sign out */}
         <Button

@@ -66,21 +66,72 @@ async function getFirebaseAuth(): Promise<Auth> {
   return auth;
 }
 
+/** The one Auth capability this module consumes (also the test-fake surface). */
+interface TokenVerifier {
+  verifyIdToken(token: string): Promise<{ uid: string; phone_number?: string }>;
+}
+
+/** Test-only: inject a fake verifier so deadline semantics run without credentials. */
+export function setFirebaseAuthForTests(fake: TokenVerifier | null): void {
+  auth = fake as unknown as Auth | null;
+}
+
+/** Deadline on verifyIdToken (§10): Google's cert fetch has no bound of its own. */
+const VERIFY_TIMEOUT_MS = 5_000;
+
+/** Internal marker: the deadline fired — NOT an invalid token. */
+class FirebaseVerifyTimeoutError extends Error {
+  constructor() {
+    super(`firebase verifyIdToken timed out after ${VERIFY_TIMEOUT_MS}ms`);
+    this.name = "FirebaseVerifyTimeoutError";
+  }
+}
+
+/** Race the (non-abortable) SDK call against the deadline; the loser dangles. */
+async function verifyWithDeadline(
+  firebaseAuth: TokenVerifier,
+  token: string,
+  timeoutMs: number,
+): Promise<{ uid: string; phone_number?: string }> {
+  const call = firebaseAuth.verifyIdToken(token);
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new FirebaseVerifyTimeoutError()), timeoutMs);
+    timer.unref();
+  });
+  try {
+    return await Promise.race([call, deadline]);
+  } finally {
+    clearTimeout(timer);
+    // Swallow the dangling loser's eventual rejection (unhandledRejection is fatal).
+    call.catch(() => {});
+  }
+}
+
 /**
  * Verify a Firebase ID token → `{ uid, phone }`.
  * Throws 401 UNAUTHENTICATED on invalid/expired tokens or tokens without a
- * phone number (Phone-OTP is the only identity provider, §8.1).
+ * phone number (Phone-OTP is the only identity provider, §8.1). A verification
+ * DEADLINE is not an invalid token: it throws 503 (retryable outage) so a hung
+ * Google backend never mislabels valid users as unauthenticated — nor pins the
+ * request open. `timeoutMs` is overridable for tests only.
  */
-export async function verifyFirebaseToken(token: string): Promise<{ uid: string; phone: string }> {
+export async function verifyFirebaseToken(
+  token: string,
+  timeoutMs = VERIFY_TIMEOUT_MS,
+): Promise<{ uid: string; phone: string }> {
   const firebaseAuth = await getFirebaseAuth();
 
   let uid: string;
   let phone: string | undefined;
   try {
-    const decoded = await firebaseAuth.verifyIdToken(token);
+    const decoded = await verifyWithDeadline(firebaseAuth, token, timeoutMs);
     uid = decoded.uid;
     phone = decoded.phone_number;
-  } catch {
+  } catch (error) {
+    if (error instanceof FirebaseVerifyTimeoutError) {
+      throw new AppError("INTERNAL", "Authentication service timed out — try again", 503);
+    }
     throw new AppError("UNAUTHENTICATED", "Invalid or expired token", 401);
   }
 

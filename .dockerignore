@@ -1,0 +1,46 @@
+# Build-context hygiene. The Dockerfile copies targeted paths only; this keeps
+# the context small and guarantees secrets/build output never reach the image.
+# NOTE: frontend/*/package.json and packages/*/package.json ARE copied (pnpm
+# frozen-lockfile validation needs every workspace manifest) — do not ignore
+# them here.
+
+# VCS / tooling
+.git
+.github
+.idea
+.claude
+.turbo
+
+# Secrets — never in an image layer
+**/.env
+**/.env.*
+.env.example
+
+# Dependencies & build output (recreated inside the image)
+node_modules
+**/node_modules
+**/dist
+**/.next
+**/.expo
+**/coverage
+**/*.tsbuildinfo
+**/*.log
+
+# Frontend sources — deployed via Vercel/EAS, not this image
+frontend/*/src
+frontend/*/app
+frontend/*/assets
+frontend/*/public
+frontend/*/android
+frontend/*/ios
+packages/ui/src
+
+# Repo files the image never needs
+docs
+docker-compose.dev.yml
+renovate.json
+README.md
+**/README.md
+Dockerfile
+.dockerignore
+railway.json

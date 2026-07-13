@@ -1,5 +1,5 @@
 import type PgBoss from "pg-boss";
-import { getBoss, isJobsStarted } from "../core/jobs";
+import { getBoss, isJobsStarted, wrapWorker } from "../core/jobs";
 import { logger } from "../core/logger";
 import { sendPushToUser } from "../core/push";
 
@@ -42,10 +42,13 @@ export async function registerNotificationFanout(boss: PgBoss): Promise<void> {
     logger.warn({ err: error, queue: NOTIFICATION_FANOUT_QUEUE }, "createQueue skipped");
   }
 
-  await boss.work<NotificationFanoutJobData>(NOTIFICATION_FANOUT_QUEUE, async (jobs) => {
-    for (const job of jobs) {
-      const { userId, title, body, data } = job.data;
-      await sendPushToUser(userId, { title, body, data });
-    }
-  });
+  await boss.work<NotificationFanoutJobData>(
+    NOTIFICATION_FANOUT_QUEUE,
+    wrapWorker(NOTIFICATION_FANOUT_QUEUE, async (jobs) => {
+      for (const job of jobs) {
+        const { userId, title, body, data } = job.data;
+        await sendPushToUser(userId, { title, body, data });
+      }
+    }),
+  );
 }

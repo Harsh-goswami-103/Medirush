@@ -1,0 +1,3 @@
+# Playwright run artifacts (traces, screenshots, HTML report)
+test-results/
+playwright-report/

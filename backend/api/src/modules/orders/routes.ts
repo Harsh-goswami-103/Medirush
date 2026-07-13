@@ -11,6 +11,7 @@ import {
   ListOrdersResponseSchema,
   OrderInvoiceResponseSchema,
   OrderListQuerySchema,
+  RetryPaymentResponseSchema,
   Role,
   TrackOrderResponseSchema,
 } from "@medrush/contracts";
@@ -22,6 +23,7 @@ import {
   cancelOrder,
   createOrder,
   getOrder,
+  getPaymentHandoff,
   listOrders,
   trackOrder,
 } from "./service";
@@ -32,6 +34,7 @@ import {
  * - GET    /v1/orders            (cursor-paginated own history)
  * - GET    /v1/orders/:id        (own order detail)
  * - GET    /v1/orders/:id/track  (status + driver-location polling fallback)
+ * - GET    /v1/orders/:id/payment (re-serve the Razorpay handoff, PENDING_PAYMENT only)
  * - POST   /v1/orders/:id/cancel (§18.3 customer matrix)
  *
  * §12: orders are never cacheable — every response is `no-store`.
@@ -122,6 +125,24 @@ export const orderRoutes: FastifyPluginAsync = async (app) => {
     async (request) => {
       const { userId, role } = requireSyncedAuth(request);
       return { data: await trackOrder(userId, role, request.params.id) };
+    },
+  );
+
+  typed.get(
+    "/orders/:id/payment",
+    {
+      config: customerOnly,
+      schema: {
+        tags: ["orders"],
+        summary:
+          "Re-serve the Razorpay checkout handoff for an owned PENDING_PAYMENT prepaid order",
+        params: IdParamsSchema,
+        response: { 200: RetryPaymentResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireSyncedAuth(request);
+      return { data: await getPaymentHandoff(userId, request.params.id) };
     },
   );
 

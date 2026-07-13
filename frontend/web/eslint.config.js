@@ -8,4 +8,17 @@ export default [
     // Client code may log to the browser console for error reporting.
     rules: { "no-console": "off" },
   },
+  {
+    // Hand-rolled service worker: ServiceWorkerGlobalScope globals, not a module.
+    files: ["public/sw.js"],
+    languageOptions: {
+      globals: {
+        self: "readonly",
+        caches: "readonly",
+        fetch: "readonly",
+        Response: "readonly",
+        URL: "readonly",
+      },
+    },
+  },
 ];

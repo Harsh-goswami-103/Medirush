@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
+  AckResponseSchema,
   GetOpsOrderResponseSchema,
   IdParamsSchema,
   OpsCancelOrderBodySchema,
@@ -20,6 +21,7 @@ import {
   listOps,
   markReady,
   opsCancel,
+  resetOtp,
   rxReview,
   startPacking,
   type OpsActor,
@@ -136,14 +138,32 @@ export const opsOrderRoutes: FastifyPluginAsync = async (app) => {
       config: { roles: OPS_ROLES },
       schema: {
         tags: ["ops"],
-        summary: "Cancel any pre-DELIVERED order (restock per §18.3)",
+        summary: "Cancel any pre-DELIVERED order (restock per §18.3; codRefused marks a doorstep COD refusal)",
         params: IdParamsSchema,
         body: OpsCancelOrderBodySchema,
         response: { 200: OpsCancelOrderResponseSchema },
       },
     },
     async (request) => ({
-      data: await opsCancel(request.params.id, request.body.reason, requireActor(request)),
+      data: await opsCancel(request.params.id, request.body.reason, requireActor(request), {
+        codRefused: request.body.codRefused,
+      }),
+    }),
+  );
+
+  typed.post(
+    "/ops/orders/:id/reset-otp",
+    {
+      config: { roles: OPS_ROLES },
+      schema: {
+        tags: ["ops"],
+        summary: "Zero the wrong-OTP counter on an active delivery-stage order (§9.7 unlock)",
+        params: IdParamsSchema,
+        response: { 200: AckResponseSchema },
+      },
+    },
+    async (request) => ({
+      data: await resetOtp(request.params.id, requireActor(request)),
     }),
   );
 };

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0d9488" />
+    <title>You're offline — MedRush</title>
+    <!--
+      Offline fallback, precached and served by public/sw.js for navigations
+      that fail while offline. Fully self-contained on purpose: inline styles,
+      no JS, no external assets — it must render when nothing else can load.
+      "Try again" is a plain anchor (the navigation goes network-first and
+      falls back here again if still offline).
+
+      Editing this file? Bump CACHE_VERSION in public/sw.js or installed
+      clients keep serving the old copy.
+    -->
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        background: #f8fafc;
+        color: #0f172a;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1.5rem;
+        text-align: center;
+      }
+      main {
+        display: flex;
+        max-width: 20rem;
+        flex-direction: column;
+        align-items: center;
+        gap: 0.75rem;
+      }
+      .glyph {
+        font-size: 2.25rem;
+        line-height: 1;
+      }
+      h1 {
+        font-size: 1.125rem;
+        font-weight: 600;
+      }
+      p {
+        font-size: 0.875rem;
+        line-height: 1.5;
+        color: #475569;
+      }
+      .retry {
+        margin-top: 0.5rem;
+        display: inline-flex;
+        width: 100%;
+        align-items: center;
+        justify-content: center;
+        border-radius: 0.625rem;
+        background: #0d9488;
+        padding: 0.5rem 0.875rem;
+        font-size: 0.875rem;
+        font-weight: 500;
+        color: #ffffff;
+        text-decoration: none;
+      }
+      .retry:hover {
+        background: #0b8074;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="glyph" aria-hidden="true">📡</p>
+      <h1>You&rsquo;re offline</h1>
+      <p>
+        MedRush needs an internet connection to show medicines and orders. Check your connection
+        and try again.
+      </p>
+      <a class="retry" href="/">Try again</a>
+    </main>
+  </body>
+</html>

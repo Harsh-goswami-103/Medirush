@@ -8,6 +8,7 @@
  * | GET  /v1/orders/:id                    | IdParams                        | OrderDetailSchema              |
  * | GET  /v1/orders/:id/track              | IdParams                        | TrackOrderResultSchema         |
  * | POST /v1/orders/:id/cancel             | CancelOrderBodySchema           | CancelOrderResultSchema        |
+ * | GET  /v1/orders/:id/payment            | IdParams                        | RetryPaymentResultSchema       |
  * | POST /v1/orders/:id/prescriptions      | multipart file (≤5MB jpeg/png/pdf) | PrescriptionSchema          |
  * | GET  /v1/orders/:id/invoice            | IdParams                        | OrderInvoiceSchema             |
  *
@@ -285,6 +286,23 @@ export const CancelOrderResultSchema = z.object({
 });
 export type CancelOrderResult = z.infer<typeof CancelOrderResultSchema>;
 export const CancelOrderResponseSchema = envelope(CancelOrderResultSchema);
+
+/* ---------------------------------------------------------- retry payment */
+
+/**
+ * GET /v1/orders/:id/payment — re-serve the Razorpay checkout handoff for an
+ * owned PREPAID order still at PENDING_PAYMENT (the customer dismissed the
+ * sheet and navigated away; the cart was already consumed by the create TX).
+ * Carries the SAME `razorpay` shape as create — the client reopens Checkout.js
+ * with the EXISTING rzpOrderId — plus the auto-cancel deadline.
+ */
+export const RetryPaymentResultSchema = z.object({
+  razorpay: RazorpayCheckoutSchema,
+  /** When the still-unpaid order is auto-cancelled (createdAt + payment timeout, §9.3). */
+  expiresAt: IsoDateTimeSchema,
+});
+export type RetryPaymentResult = z.infer<typeof RetryPaymentResultSchema>;
+export const RetryPaymentResponseSchema = envelope(RetryPaymentResultSchema);
 
 /* ---------------------------------------------------------- prescriptions */
 

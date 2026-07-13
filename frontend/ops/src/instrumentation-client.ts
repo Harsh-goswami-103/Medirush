@@ -9,6 +9,9 @@ if (dsn) {
   Sentry.init({
     dsn,
     environment: process.env.NODE_ENV,
+    // Client bundles only inline NEXT_PUBLIC_* — VERCEL_GIT_COMMIT_SHA is a
+    // server-only fallback that compiles to undefined here (harmless).
+    release: process.env.NEXT_PUBLIC_COMMIT_SHA ?? process.env.VERCEL_GIT_COMMIT_SHA,
     tracesSampleRate: process.env.NODE_ENV === "production" ? 0.1 : 1.0,
     // Session Replay is opt-in per privacy review — off by default.
     replaysSessionSampleRate: 0,

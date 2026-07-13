@@ -153,7 +153,8 @@ export const OpsOrderDetailSchema = OrderSchema.omit({
   customer: z.object({
     id: IdSchema,
     name: z.string().nullable(),
-    phone: PhoneSchema,
+    /** E.164 — or the `anon:<userId>` tombstone once the customer is erased (orders are retained). */
+    phone: z.string(),
   }),
   items: z.array(OpsOrderItemSchema),
   prescriptions: z.array(OpsPrescriptionSchema),
@@ -222,6 +223,12 @@ export const ReadyResponseSchema = envelope(OpsOrderDetailSchema);
 /** POST /v1/ops/orders/:id/cancel — triggers refund + restock per §18.3. */
 export const OpsCancelOrderBodySchema = z.object({
   reason: z.string().trim().min(3).max(500),
+  /**
+   * Explicit doorstep COD refusal (Phase 7 fraud wiring): only valid for COD
+   * orders at ASSIGNED/PICKED_UP; increments the customer's codRefusalCount in
+   * the cancel transaction. Never inferred from a plain cancel.
+   */
+  codRefused: z.boolean().optional(),
 });
 export type OpsCancelOrderBody = z.infer<typeof OpsCancelOrderBodySchema>;
 export const OpsCancelOrderResponseSchema = envelope(OpsOrderDetailSchema);

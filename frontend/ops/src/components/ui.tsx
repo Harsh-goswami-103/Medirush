@@ -17,6 +17,7 @@ export function Button({
   variant = "primary",
   className,
   loading,
+  disabled,
   children,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant; loading?: boolean }) {
@@ -28,8 +29,8 @@ export function Button({
         BUTTON_VARIANTS[variant],
         className,
       )}
-      disabled={loading || props.disabled}
       {...props}
+      disabled={loading || disabled}
     >
       {loading && <Spinner className="h-4 w-4" />}
       {children}

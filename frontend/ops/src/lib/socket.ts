@@ -9,6 +9,7 @@ import type {
   ServerToClientEvents,
 } from "@medrush/contracts";
 import { API_BASE_URL } from "./env";
+import { getAuthToken } from "./api";
 import { useAuth } from "./auth";
 import { useToast } from "@/components/toast";
 
@@ -29,10 +30,15 @@ export function useOpsLiveBoard(): { connected: boolean } {
   const toast = useToast();
   const [connected, setConnected] = useState(false);
 
+  // Key the effect on *having* a session, not the token string: Firebase ID
+  // tokens rotate hourly and reconnecting the socket on every refresh would
+  // churn the board. The handshake callback reads the current bearer instead.
+  const authed = token !== null;
+
   useEffect(() => {
-    if (!token) return;
+    if (!authed) return;
     const socket: OpsSocket = io(API_BASE_URL, {
-      auth: { token },
+      auth: (cb) => cb({ token: getAuthToken() }),
       transports: ["websocket"],
     });
 
@@ -53,7 +59,7 @@ export function useOpsLiveBoard(): { connected: boolean } {
       socket.disconnect();
       setConnected(false);
     };
-  }, [token, qc, toast]);
+  }, [authed, qc, toast]);
 
   return { connected };
 }

@@ -1,5 +1,5 @@
 import type PgBoss from "pg-boss";
-import { getBoss, isJobsStarted } from "../core/jobs";
+import { getBoss, isJobsStarted, wrapWorker } from "../core/jobs";
 import { logger } from "../core/logger";
 import { generateInvoiceForOrder } from "../modules/invoices/service";
 
@@ -32,9 +32,12 @@ export async function registerInvoicePdf(boss: PgBoss): Promise<void> {
     logger.warn({ err: error, queue: INVOICE_PDF_QUEUE }, "createQueue skipped");
   }
 
-  await boss.work<InvoicePdfJobData>(INVOICE_PDF_QUEUE, async (jobs) => {
-    for (const job of jobs) {
-      await generateInvoiceForOrder(job.data.orderId);
-    }
-  });
+  await boss.work<InvoicePdfJobData>(
+    INVOICE_PDF_QUEUE,
+    wrapWorker(INVOICE_PDF_QUEUE, async (jobs) => {
+      for (const job of jobs) {
+        await generateInvoiceForOrder(job.data.orderId);
+      }
+    }),
+  );
 }

@@ -27,6 +27,8 @@ export const ErrorCode = {
   RATE_LIMITED: "RATE_LIMITED",
   UPGRADE_REQUIRED: "UPGRADE_REQUIRED",
   PAYMENT_FAILED: "PAYMENT_FAILED",
+  /** Payment provider unreachable/timed out (Phase 7 §10) — retry later; 503. */
+  PAYMENT_UNAVAILABLE: "PAYMENT_UNAVAILABLE",
   STORE_CONFIG_MISSING: "STORE_CONFIG_MISSING",
   INTERNAL: "INTERNAL",
 } as const;
@@ -90,4 +92,5 @@ export const ERROR_HTTP_STATUS: Record<ErrorCode, number> = {
   RATE_LIMITED: 429,
   STORE_CONFIG_MISSING: 500,
   INTERNAL: 500,
+  PAYMENT_UNAVAILABLE: 503,
 };

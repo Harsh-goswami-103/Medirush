@@ -8,30 +8,44 @@ monthly cadence) and record the result.
 
 - **Job:** pg-boss cron `db-backup` (`backend/api/src/jobs/dbBackup.ts`), nightly **02:00 IST**.
 - **Pipeline:** `pg_dump` (plain SQL, `--no-owner --no-privileges`) → gzip → `gpg --symmetric` (AES-256).
-- **Destination:** the private R2 bucket, key `backups/medrush-<ISO-timestamp>.sql.gz.gpg`.
-- **Config gate (no-op unless all set):** `BACKUP_GPG_PASSPHRASE`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
-  `R2_SECRET_ACCESS_KEY`, `R2_PRIVATE_BUCKET`. In dev/CI these are unset → the job logs a skip and spawns
-  nothing. It only runs in configured production.
+- **Destination:** the **backup bucket**, key `backups/medrush-<ISO-timestamp>.sql.gz.gpg`. Each
+  `BACKUP_R2_*` value (`BACKUP_R2_BUCKET`, `BACKUP_R2_ACCOUNT_ID`, `BACKUP_R2_ACCESS_KEY_ID`,
+  `BACKUP_R2_SECRET_ACCESS_KEY`) falls back to its runtime `R2_*` counterpart when unset — set the
+  dedicated ones so a compromised runtime R2 key cannot destroy the backups.
+- **Config gate (no-op unless set):** `BACKUP_GPG_PASSPHRASE` + effective R2 credentials + an effective
+  bucket (dedicated `BACKUP_R2_*` or the runtime fallback). In dev/CI these are unset → the job logs a
+  skip and spawns nothing. It only runs in configured production.
+- **After a successful upload (never before):**
+  - *Heartbeat* — if `BACKUP_HEARTBEAT_URL` is set, the job GETs it (dead-man's-switch: point it at a
+    Better Stack heartbeat; the monitor pages when the pings STOP arriving).
+  - *Retention prune* — backup objects older than `BACKUP_RETENTION_DAYS` (default **60**) are deleted.
+    The prune runs only after a green upload, so a broken pipeline can never age out the last good backup.
 - **Prod prerequisites in the API image:** `pg_dump` (postgresql-client) and `gpg` on `PATH`. A failed backup
   is logged as `db-backup FAILED` (wire this to the alert channel — §24 Observability).
 
 ## Prerequisites to restore
 
 - The `BACKUP_GPG_PASSPHRASE` used at backup time (from the secret store — NOT from this file).
-- Read access to the private R2 bucket (`aws` CLI with the R2 endpoint, or the Cloudflare dashboard).
+- Read access to the backup bucket — `BACKUP_R2_BUCKET` if set, else `R2_PRIVATE_BUCKET` — with the
+  matching credentials (`aws` CLI against the R2 endpoint, or the Cloudflare dashboard).
 - `gpg`, `gunzip`, and `psql` locally.
 - A **target** database URL. For a drill this is a throwaway DB; for a real DR it is the new prod DB.
 
 ## Restore procedure
 
 ```bash
+# 0. Resolve the EFFECTIVE backup location: each BACKUP_R2_* wins over its
+#    runtime R2_* fallback (same rule the job uses). Credentials likewise:
+#    BACKUP_R2_ACCESS_KEY_ID/SECRET if set, else the runtime R2 pair.
+export BACKUP_BUCKET="<BACKUP_R2_BUCKET, or R2_PRIVATE_BUCKET when unset>"
+export R2_ENDPOINT="https://<BACKUP_R2_ACCOUNT_ID, or R2_ACCOUNT_ID when unset>.r2.cloudflarestorage.com"
+
 # 1. Pick a backup object (newest, or a specific date).
-export R2_ENDPOINT="https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com"
-aws s3 ls "s3://<R2_PRIVATE_BUCKET>/backups/" --endpoint-url "$R2_ENDPOINT" | tail
+aws s3 ls "s3://$BACKUP_BUCKET/backups/" --endpoint-url "$R2_ENDPOINT" | tail
 OBJ="backups/medrush-2026-07-12T20-30-00-000Z.sql.gz.gpg"     # example
 
 # 2. Download it.
-aws s3 cp "s3://<R2_PRIVATE_BUCKET>/$OBJ" ./backup.sql.gz.gpg --endpoint-url "$R2_ENDPOINT"
+aws s3 cp "s3://$BACKUP_BUCKET/$OBJ" ./backup.sql.gz.gpg --endpoint-url "$R2_ENDPOINT"
 
 # 3. Decrypt → decompress → restore into the TARGET db (never prod during a drill).
 export RESTORE_DATABASE_URL="postgresql://user:pass@host:5432/medrush_restore"

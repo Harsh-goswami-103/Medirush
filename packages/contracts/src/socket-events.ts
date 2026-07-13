@@ -125,6 +125,10 @@ export const AlertKind = {
   FRAUD_VELOCITY: "FRAUD_VELOCITY",
   /** Nightly wallet ledger drift detected (§9.6). */
   WALLET_DRIFT: "WALLET_DRIFT",
+  /** Nightly encrypted DB backup failed (§11/§24) — investigate before the next window. */
+  DB_BACKUP_FAILED: "DB_BACKUP_FAILED",
+  /** Automated refund could not be executed — ops must refund by hand (§18.3). */
+  MANUAL_REFUND_REQUIRED: "MANUAL_REFUND_REQUIRED",
   GENERIC: "GENERIC",
 } as const;
 export type AlertKind = (typeof AlertKind)[keyof typeof AlertKind];

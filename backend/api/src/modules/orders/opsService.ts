@@ -3,6 +3,7 @@ import {
   ActorType,
   FEFO_MIN_SHELF_LIFE_DAYS,
   OrderStatus,
+  PaymentMethod,
   Role,
   RxStatus,
   type AddressSnapshot,
@@ -589,15 +590,29 @@ export async function markReady(
   return getOpsDetail(id);
 }
 
+/** Statuses in which a COD order is out for delivery — the only window in
+ * which a doorstep COD refusal (§10.3 fraud signal) can genuinely happen. */
+const OUT_FOR_DELIVERY_STATUSES: readonly OrderStatus[] = [
+  OrderStatus.ASSIGNED,
+  OrderStatus.PICKED_UP,
+];
+
 /**
  * Ops/admin cancel — any pre-DELIVERED status → CANCELLED (§18.3; legality is
  * asserted by the state machine). Restocks product stock + batch allocations
  * via agent C's restockOrder, records reason + cancelledAt, one event.
+ *
+ * `codRefused: true` is the EXPLICIT doorstep-refusal marker (§10.3): only ops
+ * asserts it (never inferred from a plain COD cancel), only on a COD order that
+ * was out for delivery (ASSIGNED/PICKED_UP), and it increments the customer's
+ * `codRefusalCount` inside the cancel transaction + writes an AuditLog row —
+ * feeding the COD auto-disable threshold checked at checkout.
  */
 export async function opsCancel(
   id: string,
   reason: string,
   actor: OpsActor,
+  options: { codRefused?: boolean } = {},
 ): Promise<OpsOrderDetailWithMarker> {
   const prisma = getPrisma();
   const actorType = actorTypeFor(actor.role);
@@ -607,12 +622,26 @@ export async function opsCancel(
   await prisma.$transaction(async (tx) => {
     const order = await tx.order.findUnique({
       where: { id },
-      select: { status: true, userId: true, orderNo: true },
+      select: { status: true, userId: true, orderNo: true, paymentMethod: true },
     });
     if (!order) throw new AppError("NOT_FOUND", "Order not found", 404);
     assertTransition(order.status, OrderStatus.CANCELLED, actorType);
     customerUserId = order.userId;
     customerOrderNo = order.orderNo;
+
+    if (options.codRefused) {
+      if (
+        order.paymentMethod !== PaymentMethod.COD ||
+        !OUT_FOR_DELIVERY_STATUSES.includes(order.status)
+      ) {
+        throw new AppError(
+          "VALIDATION_ERROR",
+          "codRefused applies only to COD orders that are out for delivery",
+          422,
+          { status: order.status, paymentMethod: order.paymentMethod },
+        );
+      }
+    }
 
     const updated = await tx.order.updateMany({
       where: { id, status: order.status },
@@ -620,6 +649,25 @@ export async function opsCancel(
     });
     if (updated.count !== 1) {
       throw new AppError("CONFLICT", "Order changed concurrently — reload and retry", 409);
+    }
+
+    if (options.codRefused) {
+      // Fraud signal (§10.3): counted only on the explicit marker, in the same
+      // TX as the cancel so a conflict/rollback never leaves a stray increment.
+      const refuser = await tx.user.update({
+        where: { id: order.userId },
+        data: { codRefusalCount: { increment: 1 } },
+        select: { codRefusalCount: true },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: actor.userId,
+          action: "COD_REFUSED",
+          entity: "Order",
+          entityId: id,
+          meta: { userId: order.userId, codRefusalCount: refuser.codRefusalCount },
+        },
+      });
     }
 
     await restockOrder(tx, id);
@@ -650,4 +698,63 @@ export async function opsCancel(
     data: { orderId: id },
   });
   return getOpsDetail(id);
+}
+
+/* --------------------------------------------------------------- reset OTP */
+
+/** Statuses in which the delivery OTP is live and a reset makes sense (§9.7):
+ * READY (OTP minted, waiting for a driver) through PICKED_UP (at the door). */
+const OTP_RESETTABLE_STATUSES: readonly OrderStatus[] = [
+  OrderStatus.READY,
+  OrderStatus.ASSIGNED,
+  OrderStatus.PICKED_UP,
+];
+
+/**
+ * POST /v1/ops/orders/:id/reset-otp — §9.7 lockout recovery: after
+ * DELIVERY_OTP_MAX_ATTEMPTS wrong doorstep OTP entries the order is OTP_LOCKED;
+ * ops verifies the customer out-of-band and zeroes `Order.otpAttempts` so the
+ * driver can retry. Only for an active delivery-stage order (READY/ASSIGNED/
+ * PICKED_UP → 409 otherwise), idempotent (resetting an already-zero counter is
+ * a success), audited (sensitive mutation). Minimal ack response.
+ */
+export async function resetOtp(id: string, actor: OpsActor): Promise<{ ok: true }> {
+  const prisma = getPrisma();
+
+  const order = await prisma.order.findUnique({
+    where: { id },
+    select: { status: true, otpAttempts: true },
+  });
+  if (!order) throw new AppError("NOT_FOUND", "Order not found", 404);
+  if (!OTP_RESETTABLE_STATUSES.includes(order.status)) {
+    throw new AppError(
+      "CONFLICT",
+      "OTP attempts can only be reset while the order is in the delivery stage",
+      409,
+      { status: order.status },
+    );
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // Conditional on status so a concurrent DELIVERED/CANCELLED flip wins — a
+    // reset landing on a terminal order would only be audit noise, not harm.
+    const updated = await tx.order.updateMany({
+      where: { id, status: { in: [...OTP_RESETTABLE_STATUSES] } },
+      data: { otpAttempts: 0 },
+    });
+    if (updated.count !== 1) {
+      throw new AppError("CONFLICT", "Order changed concurrently — reload and retry", 409);
+    }
+    await tx.auditLog.create({
+      data: {
+        actorId: actor.userId,
+        action: "OTP_RESET",
+        entity: "Order",
+        entityId: id,
+        meta: { previousAttempts: order.otpAttempts },
+      },
+    });
+  });
+
+  return { ok: true };
 }

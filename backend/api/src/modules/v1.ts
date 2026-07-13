@@ -14,8 +14,11 @@ import { prescriptionRoutes } from "./prescriptions/routes";
 import { paymentRoutes } from "./payments/routes";
 import { opsInventoryRoutes } from "./inventory/opsRoutes";
 import { adminAnalyticsRoutes } from "./admin/analyticsRoutes";
+import { adminAuditRoutes } from "./admin/auditRoutes";
 import { adminFleetRoutes } from "./admin/fleetRoutes";
 import { adminMarketingRoutes } from "./admin/marketingRoutes";
+import { opsAlertRoutes } from "./alerts/routes";
+import { dispatchOpsRoutes } from "./dispatch/opsRoutes";
 
 /**
  * /v1 module root — registered with `{ prefix: "/v1" }` in app.ts.
@@ -43,4 +46,9 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
   await app.register(adminAnalyticsRoutes);
   await app.register(adminFleetRoutes);
   await app.register(adminMarketingRoutes);
+  // Phase 7 — durable ops alerts + dispatch dead-end recovery
+  await app.register(opsAlertRoutes);
+  await app.register(dispatchOpsRoutes);
+  // Phase 7 — audit-trail read side (DPDP erasure + admin action review)
+  await app.register(adminAuditRoutes);
 };

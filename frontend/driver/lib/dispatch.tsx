@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { AppState, Vibration } from "react-native";
+import { AppState, Vibration, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import * as Location from "expo-location";
 import { io, type Socket } from "socket.io-client";
@@ -9,10 +10,18 @@ import type {
   DriverLocationPing,
   ServerToClientEvents,
 } from "@medrush/contracts";
+import { Txt } from "../components/ui";
 import { API_BASE_URL } from "./env";
 import { api } from "./api";
 import { useAuth } from "./auth";
+import {
+  isBackgroundLocationAvailable,
+  startBackgroundTracking,
+  stopBackgroundTracking,
+} from "./backgroundLocation";
+import { setBackgroundLocationSender } from "./locationSink";
 import { qk, useActiveDelivery } from "./queries";
+import { colors, font, radius, space } from "./theme";
 
 /**
  * Real-time dispatch layer (§7.3). One socket, opened while signed in:
@@ -23,6 +32,9 @@ import { qk, useActiveDelivery } from "./queries";
  * The server auto-joins a DRIVER connection to its own `driver:{profileId}`
  * room, so no client-side join is needed. While a delivery is active, the app
  * streams GPS: `location:update` over the socket, with an HTTP batch fallback.
+ * When the build supports it (lib/backgroundLocation.ts — next EAS build), a
+ * foreground-service background stream keeps tracking alive with the phone
+ * pocketed; permission denied → foreground-only + a persistent warning banner.
  */
 
 interface DispatchState {
@@ -42,10 +54,16 @@ function alertOffer(): void {
 export function DispatchProvider({ children }: { children: React.ReactNode }) {
   const { token } = useAuth();
   const client = useQueryClient();
+  const insets = useSafeAreaInsets();
   const { data: active } = useActiveDelivery(!!token);
   const [connected, setConnected] = useState(false);
   const [offerPing, setOfferPing] = useState(0);
+  /** Background permission denied → tracking works only while foregrounded. */
+  const [bgDenied, setBgDenied] = useState(false);
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
+
+  /** GPS should stream: signed in AND a delivery is in progress. */
+  const tracking = !!token && !!active;
 
   // ── socket lifecycle ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -72,7 +90,18 @@ export function DispatchProvider({ children }: { children: React.ReactNode }) {
       void client.invalidateQueries({ queryKey: qk.active });
     });
 
+    // Background-task batches (lib/backgroundLocation.ts) reuse this socket.
+    // Disconnected socket → DROP (never buffer stale pings); the Android
+    // foreground service keeps the JS process alive so it stays connected.
+    setBackgroundLocationSender((points) => {
+      if (!socket.connected) return;
+      for (const p of points) {
+        socket.emit("location:update", { lat: p.lat, lng: p.lng, ts: p.ts });
+      }
+    });
+
     return () => {
+      setBackgroundLocationSender(null);
       socket.off();
       socket.disconnect();
       socketRef.current = null;
@@ -80,9 +109,17 @@ export function DispatchProvider({ children }: { children: React.ReactNode }) {
     };
   }, [token, client]);
 
-  // ── GPS streaming while a delivery is active (foreground) ──────────────────
+  // ── GPS streaming while a delivery is active ────────────────────────────────
+  // Foreground watcher always runs (today's behavior); when this build has the
+  // background APIs, we additionally start a foreground-service stream so the
+  // pings keep flowing with the phone pocketed. Delivery done/unassigned or
+  // sign-out → tracking flips false → everything stops.
   useEffect(() => {
-    if (!active) return;
+    if (!tracking) {
+      setBgDenied(false);
+      void stopBackgroundTracking();
+      return;
+    }
     let sub: Location.LocationSubscription | null = null;
     let cancelled = false;
 
@@ -106,13 +143,26 @@ export function DispatchProvider({ children }: { children: React.ReactNode }) {
           }
         },
       );
+
+      // Background upgrade — no-op in the old dev client (module absent).
+      if (cancelled || !isBackgroundLocationAvailable()) return;
+      const result = await startBackgroundTracking(() => cancelled);
+      if (cancelled) {
+        // Effect cleaned up while the permission modal was up — its cleanup's
+        // stop ran before anything could start, so stop again here to make
+        // sure no orphaned foreground service outlives the delivery.
+        void stopBackgroundTracking();
+        return;
+      }
+      setBgDenied(result === "denied");
     })();
 
     return () => {
       cancelled = true;
       sub?.remove();
+      void stopBackgroundTracking();
     };
-  }, [active]);
+  }, [tracking]);
 
   // ── refresh active on app foreground (missed socket events while backgrounded)
   useEffect(() => {
@@ -123,7 +173,32 @@ export function DispatchProvider({ children }: { children: React.ReactNode }) {
   }, [client]);
 
   return (
-    <DispatchContext.Provider value={{ connected, offerPing }}>{children}</DispatchContext.Provider>
+    <DispatchContext.Provider value={{ connected, offerPing }}>
+      <View style={{ flex: 1 }}>
+        {children}
+        {tracking && bgDenied ? (
+          <View
+            pointerEvents="none"
+            style={{
+              position: "absolute",
+              top: insets.top + space.sm,
+              left: space.lg,
+              right: space.lg,
+              backgroundColor: colors.warningBg,
+              borderColor: colors.warning,
+              borderWidth: 1,
+              borderRadius: radius.md,
+              paddingVertical: space.sm,
+              paddingHorizontal: space.md,
+            }}
+          >
+            <Txt size={font.xs} color="warning" weight="600" align="center">
+              Background location is off — keep the app open for live tracking.
+            </Txt>
+          </View>
+        ) : null}
+      </View>
+    </DispatchContext.Provider>
   );
 }
 
