@@ -10,7 +10,9 @@ import { API_URL, OPS_URL, WEB_URL } from "./stack";
  *  2. normalises the seeded store to 24×7 hours (sql/open-store.sql) so the
  *     checkout STORE_CLOSED gate can't flake runs outside 08:00–22:00 IST,
  *     and polls /v1/store until the API's 60s StoreConfig cache reflects it;
- *  3. pre-warms the routes the spec visits — `next dev` compiles per route on
+ *  3. deletes orders left behind by previous runs (sql/reset-demo-orders.sql)
+ *     so checkout's 3-orders/hour velocity gate never 429s a local re-run;
+ *  4. pre-warms the routes the specs visit — `next dev` compiles per route on
  *     first hit, which would otherwise eat most of the navigation timeout.
  */
 
@@ -42,9 +44,9 @@ async function waitForHttp(name: string, url: string, timeoutMs: number): Promis
   );
 }
 
-/** Run sql/open-store.sql against the API's DATABASE_URL via the prisma CLI. */
-function openStoreAllHours(): void {
-  const sqlFile = path.join(__dirname, "sql", "open-store.sql");
+/** Run an e2e/sql/*.sql file against the API's DATABASE_URL via the prisma CLI. */
+function runSqlFile(fileName: string, what: string): void {
+  const sqlFile = path.join(__dirname, "sql", fileName);
   const command =
     `pnpm --filter @medrush/api exec prisma db execute` +
     ` --file "${sqlFile}" --schema prisma/schema.prisma`;
@@ -56,7 +58,7 @@ function openStoreAllHours(): void {
   });
   if (result.status !== 0) {
     throw new Error(
-      `Failed to normalise store hours (prisma db execute exited ${result.status}):\n` +
+      `Failed to ${what} (prisma db execute exited ${result.status}):\n` +
         `${result.stdout ?? ""}\n${result.stderr ?? ""}`,
     );
   }
@@ -101,12 +103,27 @@ async function prewarm(urls: string[]): Promise<void> {
   }
 }
 
+function openStoreAllHours(): void {
+  runSqlFile("open-store.sql", "normalise store hours");
+}
+
+/**
+ * Delete the demo customer's orders left behind by previous e2e runs and
+ * restore their stock reservations (sql/reset-demo-orders.sql) — checkout's
+ * 3-orders/hour velocity gate counts rows, so without this back-to-back local
+ * runs 429 at checkout. CI databases are fresh; there it's a no-op.
+ */
+function resetDemoOrders(): void {
+  runSqlFile("reset-demo-orders.sql", "reset previous e2e orders");
+}
+
 export default async function globalSetup(): Promise<void> {
   await waitForHttp("API", `${API_URL}/healthz`, 120_000);
   await waitForHttp("web (customer PWA)", `${WEB_URL}/login`, 180_000);
   await waitForHttp("ops console", `${OPS_URL}/login`, 180_000);
 
   openStoreAllHours();
+  resetDemoOrders();
   await waitForStoreOpen(90_000);
 
   await prewarm([
@@ -119,5 +136,6 @@ export default async function globalSetup(): Promise<void> {
     `${WEB_URL}/orders/prewarm`, // compiles the dynamic orders/[id] route
     `${OPS_URL}/login`,
     `${OPS_URL}/orders`,
+    `${OPS_URL}/orders/prewarm`, // compiles the ops orders/[id] route (rx spec)
   ]);
 }
