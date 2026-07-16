@@ -18,9 +18,14 @@ the checklist is the *what*.
 | PostgreSQL 16 | Railway managed PG | private networking, `connection_limit=10` |
 | Customer PWA | Vercel — `medrush.in` | root directory `frontend/web` |
 | Ops/Admin | Vercel — `ops.medrush.in` | root directory `frontend/ops` |
-| Edge (DNS/CDN/WAF) | Cloudflare, proxied, in front of all three | §5 row "DNS/CDN + Edge WAF" |
+| Edge (DNS/CDN/WAF) | Cloudflare — proxied on `api.`/`ops.`; `medrush.in` **DNS-only** (Vercel guidance, Phase D) | §5 row "DNS/CDN + Edge WAF" |
 | Driver app | EAS build → Play Console | `frontend/driver/eas.json` |
 | Objects | Cloudflare R2 (`medrush-public`, `medrush-private`) | versioning ON |
+
+**Run-rate (verified Jul 2026):** ~$36–47/mo ≈ ₹3,450–4,470 at launch — Railway ~$12 (Hobby, API+PG),
+Vercel Pro $20 (ToS-forced, Phase B), Firebase phone-OTP SMS $3.50–8.50, domain ~₹80; Cloudflare/R2/
+Sentry/Better Stack ride free tiers. Exceeds the §5 target by roughly the Vercel Pro line. At 10x
+traffic infra stays ~$40–50 + SMS — the ceiling is the app's own `numReplicas: 1` design, not the host.
 
 **Ordering constraints (chicken-and-egg):** Razorpay LIVE KYC and Play Console verification are the
 longest leads — start first. The **domain** must exist before: Razorpay webhook URL, Vercel prod
@@ -42,8 +47,12 @@ deploy precedes Play submission.
 ## Phase B — domain & accounts (≈2 weeks out)
 
 - [ ] Buy `medrush.in` → add zone to **Cloudflare**, switch nameservers.
-- [ ] **Railway** account + project (region: Singapore, §5).
-- [ ] **Vercel** account (two projects, Phase D).
+- [ ] **Railway** account + project (region: Singapore, §5). Verify Singapore is selectable on the
+      **Hobby** plan before committing — Hobby access to the Southeast Asia region is a recent
+      unlock; if it's gated again, Pro's $20/mo floor applies (re-budget, still fine).
+- [ ] **Vercel** account on the **Pro plan** ($20/mo, one seat covers both projects — Hobby's
+      fair-use policy prohibits commercial use and explicitly names payment processing; the web
+      app runs Razorpay checkout, so launching on Hobby risks suspension).
 - [ ] **Firebase**: project on **Blaze** (phone-OTP SMS is pay-per-use), enable **Phone** sign-in,
       create a service-account key (→ `FIREBASE_*` env vars).
 - [ ] **Cloudflare R2**: buckets `medrush-public` + `medrush-private`, **versioning ON** (both),
@@ -59,7 +68,13 @@ deploy precedes Play submission.
 
 ## Phase C — backend live on Railway
 
-1. - [ ] Railway project → **add PostgreSQL 16** (managed).
+1. - [ ] Railway project → **add PostgreSQL 16** (managed). **Then immediately enable backups —
+         Railway PG ships with NONE by default** (it's a container on a bare volume): Backups tab →
+         scheduled **volume snapshots** (daily + weekly + monthly) **and pgBackRest PITR**.
+         Coverage starts only after the first post-enable backup, and restoring a volume snapshot
+         deletes newer backups — prefer PITR's restore-to-a-sibling-service for surgical recovery.
+         **Blocking before the first real order**; with the app's nightly GPG dump to R2 this makes
+         three independent backup layers.
 2. - [ ] **New service from the GitHub repo** (`Harsh-goswami-103/Medirush`, branch `main`).
          `railway.json` at repo root is picked up automatically: DOCKERFILE builder, pre-deploy
          `npx prisma migrate deploy` (runs in the image's workdir `/app/backend/api`), health check
@@ -90,6 +105,9 @@ deploy precedes Play submission.
    | `BACKUP_GPG_PASSPHRASE` | from Phase B — **losing it makes every backup unreadable** |
    | `WEB_ORIGIN` | `https://medrush.in` (CORS allowlist) |
    | `OPS_ORIGIN` | `https://ops.medrush.in` (CORS allowlist) |
+   | `TRUST_PROXY_HOPS` | `2` — Cloudflare + Railway edge = two proxy hops once step 6 is done (code default is 1, Railway-only; leaving it unset makes `request.ip` = Cloudflare's IP behind the proxy) |
+   | `RATE_LIMIT_TRUST_CF_HEADER` | `true` — key rate limits on `CF-Connecting-IP` behind the Cloudflare perimeter (`src/app.ts` `rateLimitKeyFor`; header is only trustworthy once step 6 proxies the API) |
+   | `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` | `30` — Railway's default drain window is shorter than the app's 25 s graceful-shutdown budget (readyz-503 → Socket.io drain → pg-boss 20 s stop) |
    | `RESEND_API_KEY` | *optional* — email integration |
 
 4. - [ ] **Deploy.** Watch: image builds → pre-deploy applies all migrations (4 at launch) →
@@ -103,7 +121,9 @@ deploy precedes Play submission.
          rate rule `/v1/auth/*` **20 req/min/IP**; **WebSockets ON** (Socket.io passthrough);
          `ops.medrush.in` **geo-restricted to IN**. Origin lock (Railway accepts Cloudflare ranges
          only): at minimum treat the `*.up.railway.app` URL as secret; harden with Cloudflare
-         Authenticated Origin Pulls as a follow-up.
+         Authenticated Origin Pulls as a follow-up. Client IPs are only correct behind this proxy
+         because of `TRUST_PROXY_HOPS=2` + `RATE_LIMIT_TRUST_CF_HEADER=true` (step 3) — without
+         them the `/v1/auth/*` rate limit keys on Cloudflare's IPs and throttles everyone at once.
 7. - [ ] Re-smoke via `https://api.medrush.in/readyz`.
 8. - [ ] **Real catalog** (§24 Data): fill `backend/api/scripts/catalog.example.csv` with the
          pharmacist-reviewed catalog, then from the Railway service shell:
@@ -122,7 +142,11 @@ deploy precedes Play submission.
       deliberately no code fallback: support/WhatsApp CTAs are hidden when unset).
 - [ ] Env vars — **ops** (`ops.medrush.in`): `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_FIREBASE_API_KEY`
       (+ other `NEXT_PUBLIC_FIREBASE_*`), `NEXT_PUBLIC_SENTRY_DSN` (ops project).
-- [ ] Domains: `medrush.in` → web, `ops.medrush.in` → ops; Cloudflare DNS proxied, Full (strict).
+- [ ] Domains: `medrush.in` → web, `ops.medrush.in` → ops. Cloudflare DNS: `medrush.in`
+      **DNS-only (grey cloud)** — Vercel officially discourages proxying another CDN in front of
+      it (double-CDN cache/TLS conflicts; Vercel's own edge already serves TLS + DDoS protection).
+      `ops.medrush.in` stays **proxied** (the IN geo-lock needs it), SSL **Full (strict)**, and
+      never apply Cache-Everything/Edge-TTL rules to Next routes.
 - [ ] Verify: home page renders products (catalog live), login works (Firebase OTP), ops board
       loads behind geo-restriction, `/privacy` + `/terms` live (Play listing needs the URL).
 
