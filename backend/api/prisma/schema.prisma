@@ -116,6 +116,7 @@ model User {
   driver      DriverProfile?
   cart        Cart?
   devices     DeviceToken[]
+  stockAlerts StockAlert[]
 }
 
 model Address {
@@ -171,7 +172,19 @@ model Product {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
   batches           Batch[]
+  stockAlerts       StockAlert[]
   @@index([categoryId, isActive])
+}
+
+model StockAlert {                                  // back-in-stock waitlist ("notify me")
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  createdAt DateTime @default(now())
+  @@unique([userId, productId])                     // one alert per user per product
+  @@index([productId])                              // fan-out lookup on restock
 }
 
 model Batch {
@@ -235,6 +248,8 @@ model Order {
   discountPaise   Int           @default(0)
   totalPaise      Int
   couponCode      String?
+  deliveryNote    String?                           // customer note to the rider (≤200 chars)
+  contactless     Boolean       @default(false)     // leave at door, no handover
   requiresRx      Boolean       @default(false)
   rxStatus        RxStatus      @default(NA)
   deliveryOtp     String?                         // 4-digit, set at READY
@@ -437,6 +452,8 @@ model Coupon {
   startsAt     DateTime
   endsAt       DateTime
   isActive     Boolean  @default(true)
+  description  String?                              // customer-facing offer copy
+  isPublic     Boolean  @default(false)             // listed on GET /v1/coupons (offers surface)
   redemptions  CouponRedemption[]
 }
 model CouponRedemption {

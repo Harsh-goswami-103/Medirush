@@ -105,6 +105,10 @@ export const ActiveDeliverySchema = z.object({
   paymentMethod: PaymentMethodSchema,
   /** Exact cash to collect in paise; null for PREPAID orders. */
   codDuePaise: PaiseSchema.nullable(),
+  /** Customer note to the rider ("blue gate", "call on arrival"). Additive-optional (Batch 2). */
+  deliveryNote: z.string().nullable().optional(),
+  /** Leave-at-door delivery — no handover. Additive-optional (Batch 2). */
+  contactless: z.boolean().optional(),
   customer: DeliveryCustomerSchema,
   /** Store pickup point. */
   pickup: GeoPointSchema,

@@ -92,6 +92,10 @@ export const OrderSchema = z.object({
   /** `items + delivery − discount`. Recomputed server-side; client totals are ignored. */
   totalPaise: PaiseSchema,
   couponCode: z.string().nullable(),
+  /** Customer note to the rider ("blue gate", "call on arrival"); ≤200 chars. */
+  deliveryNote: z.string().nullable(),
+  /** Leave-at-door delivery — no handover. */
+  contactless: z.boolean(),
   requiresRx: z.boolean(),
   rxStatus: RxStatusSchema,
   /**
@@ -161,12 +165,27 @@ export const OrderDriverSchema = z.object({
 });
 export type OrderDriver = z.infer<typeof OrderDriverSchema>;
 
+/**
+ * Refund visibility (feature-gap Batch 2). Refunds are always FULL (§18.3), so
+ * the amount is the captured payment amount; `refundId` is Razorpay's id (null
+ * while initiation is still being claimed) and `updatedAt` approximates when
+ * the refund last progressed.
+ */
+export const RefundInfoSchema = z.object({
+  refundId: z.string().nullable(),
+  amountPaise: PaiseSchema,
+  updatedAt: IsoDateTimeSchema,
+});
+export type RefundInfo = z.infer<typeof RefundInfoSchema>;
+
 /** GET /v1/orders/:id */
 export const OrderDetailSchema = OrderSchema.extend({
   events: z.array(OrderEventSchema),
   prescriptions: z.array(PrescriptionSchema),
   /** Null until a driver accepts (status ASSIGNED). */
   driver: OrderDriverSchema.nullable(),
+  /** Present only when paymentStatus is REFUND_INITIATED or REFUNDED. */
+  refund: RefundInfoSchema.nullable(),
 });
 export type OrderDetail = z.infer<typeof OrderDetailSchema>;
 export const GetOrderResponseSchema = envelope(OrderDetailSchema);
@@ -182,6 +201,10 @@ export const CreateOrderBodySchema = z.object({
   paymentMethod: PaymentMethodSchema,
   /** Uppercase coupon code; validated server-side (window/limits/minOrder). */
   couponCode: z.string().trim().min(1).max(32).optional(),
+  /** Note to the rider; trimmed, dropped when empty. */
+  deliveryNote: z.string().trim().min(1).max(200).optional(),
+  /** Leave-at-door delivery. Defaults false. */
+  contactless: z.boolean().optional(),
 });
 export type CreateOrderBody = z.infer<typeof CreateOrderBodySchema>;
 
