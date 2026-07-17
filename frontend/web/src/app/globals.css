@@ -24,3 +24,58 @@ body {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+/* Visible keyboard focus ring on every interactive element (WCAG 2.4.7). Only
+   on :focus-visible so a mouse tap doesn't paint a ring, but keyboard/AT does. */
+@layer base {
+  a:focus-visible,
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible,
+  [tabindex]:focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 2px #ffffff,
+      0 0 0 4px theme("colors.primary.600");
+    border-radius: 6px;
+  }
+}
+
+/* Shimmer skeleton — a sweeping highlight over a surface-2 base (§20.4). */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background-color: theme("colors.surface.2");
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.65) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* Honour the OS "reduce motion" setting (§20.2 / WCAG 2.3.3): strip animation
+   and transitions to a near-instant, non-moving fallback for everyone. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -9,4 +9,18 @@ import preset from "@medrush/config/tailwind/preset.js";
 export default {
   presets: [preset],
   content: ["./src/**/*.{ts,tsx}", "../../packages/ui/src/**/*.{ts,tsx}"],
+  theme: {
+    extend: {
+      fontFamily: {
+        // Web-only override: point the preset's Inter/Noto stack at the
+        // next/font self-hosted variables set on <html> in layout.tsx.
+        sans: [
+          "var(--font-inter)",
+          "var(--font-noto-devanagari)",
+          "system-ui",
+          "sans-serif",
+        ],
+      },
+    },
+  },
 } satisfies Config;

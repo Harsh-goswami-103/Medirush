@@ -70,3 +70,48 @@ self.addEventListener("fetch", (event) => {
   // the network untouched — nothing new is ever added to the cache at runtime.
   event.respondWith(caches.match(request).then((cached) => cached ?? fetch(request)));
 });
+
+/* ------------------------------------------------------------- web push */
+// FCM webpush payloads (backend core/push.ts sends { notification, data }).
+// Defensive parsing: a malformed payload still surfaces a generic notification
+// rather than dropping the push on the floor.
+self.addEventListener("push", (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    /* non-JSON push — fall through to defaults */
+  }
+  const notification = payload.notification || {};
+  const data = payload.data || {};
+  const title = notification.title || data.title || "MedRush";
+  const body = notification.body || data.body || "You have a new update.";
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
+      data,
+    }),
+  );
+});
+
+// Tap → deep-link to the order when the payload carries one, else the
+// notification center; focus an existing tab before opening a new one.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const data = event.notification.data || {};
+  const path = data.orderId ? `/orders/${data.orderId}` : "/notifications";
+  const target = new URL(path, self.location.origin).href;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if (new URL(client.url).origin === self.location.origin && "focus" in client) {
+          client.navigate(target).catch(() => undefined);
+          return client.focus();
+        }
+      }
+      return self.clients.openWindow(target);
+    }),
+  );
+});

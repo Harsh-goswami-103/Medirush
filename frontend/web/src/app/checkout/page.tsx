@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Address,
+  CouponQuote,
   CreateAddressBody,
   CreateOrderBody,
   CreateOrderResult,
@@ -86,6 +87,11 @@ export default function CheckoutPage() {
 
   const [selectedAddressId, setSelectedAddressId] = useState<string | null>(null);
   const [coupon, setCoupon] = useState("");
+  /** Server-priced quote for the applied coupon; null = none applied. */
+  const [quote, setQuote] = useState<CouponQuote | null>(null);
+  const [couponError, setCouponError] = useState<string | null>(null);
+  const [deliveryNote, setDeliveryNote] = useState("");
+  const [contactless, setContactless] = useState(false);
   // One idempotency key per checkout session — a manual retry replays (never
   // double-creates); a fresh checkout (new mount after navigation) gets a new key.
   const [idempotencyKey] = useState(() => crypto.randomUUID());
@@ -98,6 +104,20 @@ export default function CheckoutPage() {
   useEffect(() => {
     if (!authLoading && !user) router.replace("/login");
   }, [authLoading, user, router]);
+
+  // One-shot coupon hand-off from /offers ("Use code"). Key literal mirrors
+  // offers/page.tsx.
+  useEffect(() => {
+    try {
+      const pending = sessionStorage.getItem("medrush.web.pendingCoupon");
+      if (pending) {
+        setCoupon(pending);
+        sessionStorage.removeItem("medrush.web.pendingCoupon");
+      }
+    } catch {
+      // Storage blocked — nothing to prefill.
+    }
+  }, []);
 
   /* ------------------------------------------------------------ queries */
 
@@ -150,7 +170,42 @@ export default function CheckoutPage() {
     if (paymentMethod === "COD" && !codAllowed) setPaymentMethod("PREPAID");
   }, [codAllowed, paymentMethod]);
 
+  // Contactless needs no handover — impossible with cash collection.
+  useEffect(() => {
+    if (paymentMethod === "COD" && contactless) setContactless(false);
+  }, [paymentMethod, contactless]);
+
   /* ------------------------------------------------------- mutations */
+
+  // Coupon preview — POST /v1/coupons/validate prices the code against the
+  // CURRENT server cart with the same rules order-create runs, so the customer
+  // sees the discount before paying instead of applying a code blind.
+  const applyCoupon = useMutation({
+    mutationFn: (code: string) => api.post<CouponQuote>("/v1/coupons/validate", { code }),
+    onSuccess: (res) => {
+      setQuote(res.data);
+      setCouponError(null);
+    },
+    onError: (err) => {
+      setQuote(null);
+      setCouponError(err instanceof ApiError ? err.message : "Could not check that code");
+    },
+  });
+
+  // The quote was priced against a specific cart subtotal — if the cart has
+  // changed since (edited in another tab), drop it so the bill never lies.
+  useEffect(() => {
+    if (quote && totals && quote.itemsPaise !== totals.itemsPaise) {
+      setQuote(null);
+      setCouponError("Cart changed — re-apply your coupon");
+    }
+  }, [quote, totals]);
+
+  function clearCoupon() {
+    setCoupon("");
+    setQuote(null);
+    setCouponError(null);
+  }
 
   const createAddress = useMutation({
     mutationFn: (body: CreateAddressBody) => api.post<Address>("/v1/addresses", body),
@@ -173,6 +228,8 @@ export default function CheckoutPage() {
         addressId: selectedAddressId,
         paymentMethod,
         ...(coupon.trim() ? { couponCode: coupon.trim().toUpperCase() } : {}),
+        ...(deliveryNote.trim() ? { deliveryNote: deliveryNote.trim() } : {}),
+        ...(contactless ? { contactless: true } : {}),
       };
       const result = await createOrder(body, token, idempotencyKey);
       const orderId = result.order.id;
@@ -440,15 +497,25 @@ export default function CheckoutPage() {
                     .
                   </p>
                 ) : serviceability ? (
-                  <p className="font-medium text-success">
-                    Deliverable
-                    {serviceability.deliveryPaise !== null
-                      ? ` · fee ${formatPaise(serviceability.deliveryPaise)}`
-                      : ""}
-                    {serviceability.distanceM
-                      ? ` · ${(serviceability.distanceM / 1000).toFixed(1)} km`
-                      : ""}
-                  </p>
+                  <>
+                    <p className="font-medium text-success">
+                      Deliverable
+                      {serviceability.deliveryPaise !== null
+                        ? ` · fee ${formatPaise(serviceability.deliveryPaise)}`
+                        : ""}
+                      {serviceability.distanceM
+                        ? ` · ${(serviceability.distanceM / 1000).toFixed(1)} km`
+                        : ""}
+                    </p>
+                    {/* ETA heuristic mirrors the tracking screen's model: ride
+                        time at ~5 m/s (≈18 km/h city riding) + ~15 min for
+                        pharmacist check & packing. The 40-min promise is the cap. */}
+                    <p className="mt-0.5 text-xs text-ink-600">
+                      Estimated delivery in ~
+                      {Math.min(40, Math.max(20, Math.round(serviceability.distanceM / 300) + 15))}{" "}
+                      min after payment
+                    </p>
+                  </>
                 ) : null}
               </div>
             )}
@@ -456,14 +523,89 @@ export default function CheckoutPage() {
 
           {/* -------------------------------------------------- coupon */}
           <section>
-            <h2 className="mb-2 text-sm font-semibold text-ink-900">Coupon</h2>
-            <TextInput
-              placeholder="Coupon code (optional)"
-              value={coupon}
-              onChange={(e) => setCoupon(e.target.value.toUpperCase())}
-              autoCapitalize="characters"
-            />
-            <p className="mt-1 text-xs text-ink-400">Discount is applied when the order is placed.</p>
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-ink-900">Coupon</h2>
+              <Link href="/offers" className="text-sm font-medium text-primary-700">
+                View offers
+              </Link>
+            </div>
+            {quote ? (
+              <div className="flex items-center justify-between rounded-card border border-success/30 bg-success/5 px-3 py-2.5">
+                <div>
+                  <p className="text-sm font-semibold text-success">
+                    {quote.code} applied — you save {formatPaise(quote.discountPaise)}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="text-xs font-medium text-danger"
+                  onClick={clearCoupon}
+                >
+                  Remove
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="flex gap-2">
+                  <TextInput
+                    placeholder="Coupon code (optional)"
+                    value={coupon}
+                    onChange={(e) => {
+                      setCoupon(e.target.value.toUpperCase());
+                      setCouponError(null);
+                    }}
+                    autoCapitalize="characters"
+                  />
+                  <Button
+                    variant="secondary"
+                    className="shrink-0"
+                    disabled={coupon.trim() === ""}
+                    loading={applyCoupon.isPending}
+                    onClick={() => applyCoupon.mutate(coupon.trim().toUpperCase())}
+                  >
+                    Apply
+                  </Button>
+                </div>
+                {couponError && <p className="mt-1 text-xs font-medium text-danger">{couponError}</p>}
+              </>
+            )}
+          </section>
+
+          {/* ------------------------------------- delivery preferences */}
+          <section>
+            <h2 className="mb-2 text-sm font-semibold text-ink-900">Delivery preferences</h2>
+            <Card className="space-y-3 p-3">
+              <Field label="Note for the rider" hint="Optional · e.g. “Blue gate, call on arrival”">
+                <TextInput
+                  placeholder="Any directions for the delivery partner?"
+                  maxLength={200}
+                  value={deliveryNote}
+                  onChange={(e) => setDeliveryNote(e.target.value)}
+                />
+              </Field>
+              <label
+                className={cn(
+                  "flex items-center gap-3",
+                  paymentMethod === "COD" ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+                )}
+              >
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-primary-600"
+                  checked={contactless}
+                  disabled={paymentMethod === "COD"}
+                  onChange={(e) => setContactless(e.target.checked)}
+                />
+                <span className="text-sm text-ink-900">
+                  Contactless delivery
+                  <span className="block text-xs text-ink-400">
+                    {paymentMethod === "COD"
+                      ? "Not available with cash on delivery"
+                      : "We'll leave the package at your door"}
+                  </span>
+                </span>
+              </label>
+            </Card>
           </section>
 
           {/* -------------------------------------------------- payment */}
@@ -544,17 +686,24 @@ export default function CheckoutPage() {
                     totals.deliveryPaise === 0 ? "FREE" : formatPaise(totals.deliveryPaise)
                   }
                 />
+                {quote && (
+                  <div className="flex items-center justify-between py-0.5 text-sm">
+                    <span className="text-success">Discount ({quote.code})</span>
+                    <span className="tabular-nums text-success">
+                      − {formatPaise(quote.discountPaise)}
+                    </span>
+                  </div>
+                )}
                 <div className="my-2 border-t border-line" />
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-semibold text-ink-900">To pay</span>
                   <span className="text-base font-semibold tabular-nums text-ink-900">
-                    {formatPaise(totals.totalPaise)}
+                    {formatPaise(quote ? quote.totalPaise : totals.totalPaise)}
                   </span>
                 </div>
-                {coupon.trim() !== "" && (
+                {!quote && coupon.trim() !== "" && (
                   <p className="mt-1 text-xs text-ink-400">
-                    Any coupon discount is applied when the order is placed — the final total may be
-                    lower.
+                    Tap Apply to see the discount before you pay.
                   </p>
                 )}
                 {!totals.minOrderMet && (
@@ -581,7 +730,7 @@ export default function CheckoutPage() {
             disabled={!canPlace}
             onClick={() => placeOrder.mutate()}
           >
-            {payLabel} · {formatPaise(totals?.totalPaise ?? 0)}
+            {payLabel} · {formatPaise(quote ? quote.totalPaise : (totals?.totalPaise ?? 0))}
           </Button>
         </div>
       )}

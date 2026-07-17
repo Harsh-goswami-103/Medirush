@@ -5,8 +5,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { useCart } from "@/lib/cart";
+import { useStore } from "@/lib/store";
 import { ApiError } from "@/lib/api";
 import { formatPaise } from "@/lib/format";
+import { cn } from "@/lib/cn";
 import { TopBar } from "@/components/AppShell";
 import { Button, Card, EmptyState, ErrorState, Spinner } from "@/components/ui";
 import { ProductImage } from "@/components/shop";
@@ -16,6 +18,7 @@ export default function CartPage() {
   const router = useRouter();
   const { user, loading } = useAuth();
   const { cart, isLoading, isError, error, refetch, setItem } = useCart();
+  const { store } = useStore();
   const toast = useToast();
 
   // Auth gate — this screen is customer-only.
@@ -50,6 +53,15 @@ export default function CartPage() {
 
   const items = cart?.items ?? [];
   const isEmpty = items.length === 0;
+
+  // Delivery-fee & min-order thresholds come straight off the public store
+  // config — the values were already on the wire (§17 v1 free-delivery bar +
+  // min-order nudge); the cart just never surfaced them.
+  const itemsPaise = cart?.itemsPaise ?? 0;
+  const minOrderPaise = store?.minOrderPaise ?? 0;
+  const freeAbovePaise = store?.freeDeliveryAbovePaise ?? 0;
+  const belowMin = !isEmpty && minOrderPaise > 0 && itemsPaise < minOrderPaise;
+  const toMinPaise = Math.max(0, minOrderPaise - itemsPaise);
 
   return (
     <div>
@@ -87,6 +99,10 @@ export default function CartPage() {
                   </div>
                 )}
 
+                {freeAbovePaise > 0 && (
+                  <FreeDeliveryBar itemsPaise={itemsPaise} thresholdPaise={freeAbovePaise} />
+                )}
+
                 <Card className="divide-y divide-line">
                   {items.map((item) => {
                     const { product } = item;
@@ -109,6 +125,11 @@ export default function CartPage() {
                                 {product.name}
                               </Link>
                               <p className="text-xs text-ink-400">{product.packSize}</p>
+                              {!product.inStock && (
+                                <p className="mt-0.5 text-xs font-medium text-danger">
+                                  Out of stock — remove to checkout
+                                </p>
+                              )}
                             </div>
                             <p className="shrink-0 text-sm font-semibold text-ink-900">
                               {formatPaise(item.lineTotalPaise)}
@@ -176,17 +197,21 @@ export default function CartPage() {
 
           {/* Sticky action bar — sits above the bottom tab nav (bottom-16). */}
           <div className="fixed bottom-16 left-1/2 z-40 w-full max-w-md -translate-x-1/2 border-t border-line bg-surface/95 px-4 py-3 backdrop-blur">
+            {belowMin && (
+              <p className="mb-2 rounded-input bg-warning/10 px-3 py-1.5 text-center text-xs font-medium text-warning">
+                Add {formatPaise(toMinPaise)} more to reach the {formatPaise(minOrderPaise)} minimum
+                order
+              </p>
+            )}
             <div className="flex items-center gap-3">
               <div className="min-w-0">
                 <p className="text-xs text-ink-400">Subtotal</p>
-                <p className="text-base font-semibold text-ink-900">
-                  {formatPaise(cart?.itemsPaise ?? 0)}
-                </p>
+                <p className="text-base font-semibold text-ink-900">{formatPaise(itemsPaise)}</p>
               </div>
               <div className="ml-auto flex-1">
-                {isEmpty ? (
+                {isEmpty || belowMin ? (
                   <Button className="w-full" disabled>
-                    Proceed to checkout
+                    {belowMin ? `Add ${formatPaise(toMinPaise)} to checkout` : "Proceed to checkout"}
                   </Button>
                 ) : (
                   <Link href="/checkout" className="block">
@@ -198,6 +223,52 @@ export default function CartPage() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Progress toward free delivery (§17 v1). Reads the store's
+ * `freeDeliveryAbovePaise` threshold vs the current item subtotal and shows how
+ * much more unlocks free delivery — a proven basket-nudge.
+ */
+function FreeDeliveryBar({
+  itemsPaise,
+  thresholdPaise,
+}: {
+  itemsPaise: number;
+  thresholdPaise: number;
+}) {
+  const unlocked = itemsPaise >= thresholdPaise;
+  const remaining = Math.max(0, thresholdPaise - itemsPaise);
+  const pct = Math.min(100, Math.round((itemsPaise / thresholdPaise) * 100));
+
+  return (
+    <div
+      className={cn(
+        "rounded-card border px-3 py-2.5",
+        unlocked ? "border-success/20 bg-success/5" : "border-primary-600/20 bg-primary-600/5",
+      )}
+    >
+      <p className={cn("text-sm font-medium", unlocked ? "text-success" : "text-ink-900")}>
+        {unlocked ? (
+          <>🎉 You&apos;ve unlocked free delivery!</>
+        ) : (
+          <>
+            Add <span className="font-semibold">{formatPaise(remaining)}</span> more for{" "}
+            <span className="font-semibold">free delivery</span>
+          </>
+        )}
+      </p>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-pill bg-line">
+        <div
+          className={cn(
+            "h-full rounded-pill transition-[width] duration-300",
+            unlocked ? "bg-success" : "bg-primary-600",
+          )}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
     </div>
   );
 }

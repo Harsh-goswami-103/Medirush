@@ -6,7 +6,7 @@ import { useAuth } from "@/lib/auth";
 import { useCart } from "@/lib/cart";
 import { formatPaise } from "@/lib/format";
 import { cn } from "@/lib/cn";
-import { Badge } from "@/components/ui";
+import { Badge, Skeleton } from "@/components/ui";
 
 /** Square product image with a graceful placeholder (many dev products have none). */
 export function ProductImage({ url, name, className }: { url: string | null; name: string; className?: string }) {
@@ -101,6 +101,32 @@ export function ProductCard({ product }: { product: ProductSummary }) {
         </div>
         <AddOrStepper product={product} />
       </div>
+    </div>
+  );
+}
+
+/** Loading placeholder that mirrors {@link ProductCard} to keep CLS≈0 (§20.4). */
+export function ProductCardSkeleton() {
+  return (
+    <div className="flex flex-col rounded-card border border-line bg-surface p-2">
+      <Skeleton className="aspect-square rounded-input" />
+      <Skeleton className="mt-2 h-3.5 w-11/12 rounded" />
+      <Skeleton className="mt-1 h-3 w-1/2 rounded" />
+      <div className="mt-auto flex items-end justify-between pt-2">
+        <Skeleton className="h-4 w-14 rounded" />
+        <Skeleton className="h-7 w-12 rounded-input" />
+      </div>
+    </div>
+  );
+}
+
+/** A 2-column grid of card skeletons for first-load / pagination states. */
+export function ProductGridSkeleton({ count = 6 }: { count?: number }) {
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      {Array.from({ length: count }).map((_, i) => (
+        <ProductCardSkeleton key={i} />
+      ))}
     </div>
   );
 }

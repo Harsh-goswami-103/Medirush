@@ -117,13 +117,38 @@ export function RxBadge({ status }: { status: RxStatus }) {
   return <Badge tone={RX_TONE[status]}>Rx {status.toLowerCase()}</Badge>;
 }
 
+/* ------------------------------------------------------------------ Skeleton */
+
+/**
+ * Shimmer placeholder (§20.4 — "loading skeleton" on every list/detail). The
+ * `.skeleton` class (globals.css) paints a surface-2 base with a sweeping
+ * highlight; pass sizing/rounding via `className`. Decorative → aria-hidden.
+ */
+export function Skeleton({ className }: { className?: string }) {
+  return <span className={cn("block skeleton rounded-input", className)} aria-hidden />;
+}
+
 /* -------------------------------------------------------------- state views */
 
-export function EmptyState({ title, hint }: { title: string; hint?: string }) {
+export function EmptyState({
+  title,
+  hint,
+  icon,
+  action,
+}: {
+  title: string;
+  hint?: string;
+  /** Optional glyph/illustration above the title. */
+  icon?: ReactNode;
+  /** Optional recovery CTA (e.g. a <Link>/<Button>) below the copy (§20.4). */
+  action?: ReactNode;
+}) {
   return (
     <div className="flex flex-col items-center justify-center gap-1 rounded-card border border-dashed border-line bg-surface px-6 py-16 text-center">
+      {icon && <div className="mb-2 text-primary-600">{icon}</div>}
       <p className="font-medium text-ink-900">{title}</p>
       {hint && <p className="text-sm text-ink-600">{hint}</p>}
+      {action && <div className="mt-4 w-full max-w-xs">{action}</div>}
     </div>
   );
 }

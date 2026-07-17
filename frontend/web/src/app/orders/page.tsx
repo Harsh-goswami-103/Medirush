@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
-import type { OrderSummary } from "@medrush/contracts";
-import { api } from "@/lib/api";
+import { useInfiniteQuery } from "@tanstack/react-query";
+import type { OrderStatus, OrderSummary } from "@medrush/contracts";
+import { api, qs } from "@/lib/api";
+import { cn } from "@/lib/cn";
 import { useAuth } from "@/lib/auth";
+import { useReorder } from "@/lib/reorder";
 import { formatDateTime, formatPaise } from "@/lib/format";
 import { TopBar } from "@/components/AppShell";
 import {
@@ -19,18 +21,37 @@ import {
   Spinner,
 } from "@/components/ui";
 
-/** Order history — GET /v1/orders?limit=20. Auth-gated (redirects to /login). */
+/** History filter tabs — the API takes a single `status`, so tabs map 1:1. */
+const TABS: { label: string; status?: OrderStatus }[] = [
+  { label: "All" },
+  { label: "Delivered", status: "DELIVERED" },
+  { label: "Cancelled", status: "CANCELLED" },
+];
+
+/** Order history — GET /v1/orders?status&cursor&limit. Auth-gated (redirects to /login). */
 export default function OrdersPage() {
   const router = useRouter();
   const { user, loading } = useAuth();
+  const reorder = useReorder();
+  const [tab, setTab] = useState(0);
+  const status = TABS[tab]?.status;
+  const reorderingId =
+    reorder.isPending && reorder.variables && "orderId" in reorder.variables
+      ? reorder.variables.orderId
+      : null;
 
   useEffect(() => {
     if (!loading && !user) router.replace("/login");
   }, [loading, user, router]);
 
-  const ordersQuery = useQuery({
-    queryKey: ["orders"],
-    queryFn: () => api.get<OrderSummary[]>("/v1/orders?limit=20"),
+  // Cursor-paginated (the old fetch showed only the first 20, ignoring
+  // `meta.nextCursor`); status tabs re-key the query for a server-side filter.
+  const ordersQuery = useInfiniteQuery({
+    queryKey: ["orders", status ?? "all"],
+    queryFn: ({ pageParam }) =>
+      api.get<OrderSummary[]>(`/v1/orders${qs({ status, cursor: pageParam, limit: 20 })}`),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.meta?.nextCursor ?? undefined,
     enabled: Boolean(user),
   });
 
@@ -43,11 +64,31 @@ export default function OrdersPage() {
     );
   }
 
-  const orders = ordersQuery.data?.data ?? [];
+  const orders = ordersQuery.data?.pages.flatMap((p) => p.data) ?? [];
 
   return (
     <div>
       <TopBar title="Your orders" />
+
+      {/* Status tabs */}
+      <div className="no-scrollbar flex gap-2 overflow-x-auto px-4 pt-3">
+        {TABS.map((t, i) => (
+          <button
+            key={t.label}
+            type="button"
+            onClick={() => setTab(i)}
+            className={cn(
+              "whitespace-nowrap rounded-pill border px-3 py-1 text-sm",
+              i === tab
+                ? "border-primary-600 bg-primary-600/10 font-medium text-primary-700"
+                : "border-line bg-surface text-ink-600",
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       <div className="p-4">
         {ordersQuery.isError ? (
           <ErrorState
@@ -61,7 +102,7 @@ export default function OrdersPage() {
         ) : orders.length === 0 ? (
           <div>
             <EmptyState
-              title="No orders yet"
+              title={status ? `No ${status.toLowerCase()} orders` : "No orders yet"}
               hint="Your orders will show up here once you place one."
             />
             <Link href="/" className="mt-4 block">
@@ -71,7 +112,7 @@ export default function OrdersPage() {
         ) : (
           <ul className="space-y-3">
             {orders.map((o) => (
-              <li key={o.id}>
+              <li key={o.id} className="space-y-2">
                 <Link href={`/orders/${o.id}`} className="block">
                   <Card className="p-4">
                     <div className="flex items-center justify-between gap-2">
@@ -104,8 +145,30 @@ export default function OrdersPage() {
                     </div>
                   </Card>
                 </Link>
+                {(o.status === "DELIVERED" || o.status === "CANCELLED") && (
+                  <button
+                    type="button"
+                    className="w-full rounded-input border border-primary-600 px-3 py-1.5 text-sm font-medium text-primary-700 disabled:opacity-60"
+                    disabled={reorderingId === o.id}
+                    onClick={() => reorder.mutate({ orderId: o.id })}
+                  >
+                    {reorderingId === o.id ? "Adding…" : "Order again"}
+                  </button>
+                )}
               </li>
             ))}
+            {ordersQuery.hasNextPage && (
+              <li>
+                <Button
+                  variant="secondary"
+                  className="w-full"
+                  loading={ordersQuery.isFetchingNextPage}
+                  onClick={() => void ordersQuery.fetchNextPage()}
+                >
+                  Load more
+                </Button>
+              </li>
+            )}
           </ul>
         )}
       </div>
