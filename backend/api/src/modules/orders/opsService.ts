@@ -209,6 +209,8 @@ export async function getOpsDetail(id: string): Promise<OpsOrderDetailWithMarker
     discountPaise: order.discountPaise,
     totalPaise: order.totalPaise,
     couponCode: order.couponCode,
+    deliveryNote: order.deliveryNote,
+    contactless: order.contactless,
     requiresRx: order.requiresRx,
     rxStatus: order.rxStatus,
     cancelReason: order.cancelReason,

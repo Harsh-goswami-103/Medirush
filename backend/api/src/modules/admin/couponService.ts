@@ -44,6 +44,8 @@ function toCoupon(row: CouponRow): Coupon {
     startsAt: row.startsAt.toISOString(),
     endsAt: row.endsAt.toISOString(),
     isActive: row.isActive,
+    description: row.description,
+    isPublic: row.isPublic,
     redemptionCount: row._count.redemptions,
   };
 }
@@ -107,6 +109,8 @@ export async function createCoupon(body: CreateCouponBody, actor: AdminActor): P
           startsAt: new Date(body.startsAt),
           endsAt: new Date(body.endsAt),
           isActive: body.isActive ?? true,
+          description: body.description ?? null,
+          isPublic: body.isPublic ?? false,
         },
         include: COUPON_INCLUDE,
       });
@@ -154,6 +158,8 @@ export async function updateCoupon(
   if (body.startsAt !== undefined) data.startsAt = new Date(body.startsAt);
   if (body.endsAt !== undefined) data.endsAt = new Date(body.endsAt);
   if (body.isActive !== undefined) data.isActive = body.isActive;
+  if (body.description !== undefined) data.description = body.description;
+  if (body.isPublic !== undefined) data.isPublic = body.isPublic;
 
   try {
     const coupon = await prisma.$transaction(async (tx) => {

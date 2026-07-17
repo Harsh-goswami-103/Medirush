@@ -106,6 +106,8 @@ async function findActiveDelivery(where: Prisma.DeliveryWhereInput): Promise<Act
     status: order.status as ActiveDelivery["status"],
     paymentMethod: order.paymentMethod,
     codDuePaise: order.paymentMethod === PaymentMethod.COD ? order.totalPaise : null,
+    deliveryNote: order.deliveryNote,
+    contactless: order.contactless,
     customer: { name: order.user.name, phone: order.user.phone },
     pickup: { lat: store.lat, lng: store.lng, address: store.address },
     drop: { lat: snap.lat, lng: snap.lng, address: formatDropAddress(snap) },
