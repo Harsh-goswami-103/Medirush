@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Cart, CartItem, WishlistEntry, WishlistStatus } from "@medrush/contracts";
 import { api, ApiError, apiErrorMessage, type Envelope } from "@/lib/api";
@@ -22,6 +23,8 @@ const CTA =
   "press bg-gradient-to-r from-primary-600 to-primary-500 shadow-glow hover:from-primary-700 hover:to-primary-600 disabled:bg-none disabled:shadow-none";
 
 export default function CartPage() {
+  const t = useTranslations("cart");
+  const tCommon = useTranslations("common");
   const router = useRouter();
   const qc = useQueryClient();
   const { user, loading } = useAuth();
@@ -59,10 +62,10 @@ export default function CartPage() {
     onSuccess: (res) => {
       qc.setQueryData<Envelope<Cart>>(["cart"], res);
       void qc.invalidateQueries({ queryKey: ["wishlist"] });
-      toast.push({ type: "success", message: "Saved for later" });
+      toast.push({ type: "success", message: t("toastSaved") });
     },
     onError: (err) =>
-      toast.push({ type: "error", message: apiErrorMessage(err, "Couldn't save that item") }),
+      toast.push({ type: "error", message: apiErrorMessage(err, t("toastSaveFailed")) }),
   });
 
   const moveToCart = useMutation({
@@ -76,10 +79,10 @@ export default function CartPage() {
     onSuccess: (res) => {
       qc.setQueryData<Envelope<Cart>>(["cart"], res);
       void qc.invalidateQueries({ queryKey: ["wishlist"] });
-      toast.push({ type: "success", message: "Moved to cart" });
+      toast.push({ type: "success", message: t("toastMoved") });
     },
     onError: (err) =>
-      toast.push({ type: "error", message: apiErrorMessage(err, "Couldn't move that item") }),
+      toast.push({ type: "error", message: apiErrorMessage(err, t("toastMoveFailed")) }),
   });
 
   // Set a line to exactly `qty` (0 removes). Surface any failure via toast.
@@ -88,7 +91,7 @@ export default function CartPage() {
       { productId, qty },
       {
         onError: (err) =>
-          toast.push({ type: "error", message: apiErrorMessage(err, "Couldn't update your cart") }),
+          toast.push({ type: "error", message: apiErrorMessage(err, t("toastUpdateFailed")) }),
       },
     );
 
@@ -96,7 +99,7 @@ export default function CartPage() {
   if (loading || !user) {
     return (
       <div className="min-h-dvh bg-mesh">
-        <TopBar title="Cart" />
+        <TopBar title={t("title")} />
         <div className="p-4">
           <CartSkeleton />
         </div>
@@ -120,11 +123,11 @@ export default function CartPage() {
   return (
     <div className="min-h-dvh bg-mesh pb-2">
       <TopBar
-        title="Cart"
+        title={t("title")}
         right={
           itemCount > 0 ? (
             <span className="rounded-pill bg-primary-50 px-2.5 py-1 text-xs font-semibold text-primary-800">
-              {itemCount} {itemCount === 1 ? "item" : "items"}
+              {t("itemCount", { count: itemCount })}
             </span>
           ) : undefined
         }
@@ -137,7 +140,7 @@ export default function CartPage() {
       ) : isError ? (
         <div className="p-4">
           <ErrorState
-            message={error instanceof Error ? error.message : "Couldn't load your cart"}
+            message={error instanceof Error ? error.message : t("loadError")}
             onRetry={() => refetch()}
           />
         </div>
@@ -147,11 +150,11 @@ export default function CartPage() {
             {isEmpty ? (
               <EmptyState
                 icon={<CartGlyph />}
-                title="Your cart is empty"
-                hint="Add medicines and essentials — we deliver in minutes."
+                title={t("empty")}
+                hint={t("emptyHint")}
                 action={
                   <Link href="/shop" className="block">
-                    <Button className={cn("w-full", CTA)}>Browse products</Button>
+                    <Button className={cn("w-full", CTA)}>{tCommon("browseProducts")}</Button>
                   </Link>
                 }
               />
@@ -160,10 +163,7 @@ export default function CartPage() {
                 {cart?.requiresRx && (
                   <div className="flex items-start gap-2.5 rounded-xl2 border border-rx/20 bg-rx/5 px-3.5 py-3 shadow-sm">
                     <RxGlyph />
-                    <p className="text-sm text-rx">
-                      This order needs a prescription — you can attach one from your locker at
-                      checkout, or upload it after placing the order.
-                    </p>
+                    <p className="text-sm text-rx">{t("rxNotice")}</p>
                   </div>
                 )}
 
@@ -172,7 +172,7 @@ export default function CartPage() {
                     className="rounded-xl2 border border-danger/20 bg-danger/5 px-3.5 py-3 text-sm font-medium text-danger"
                     role="status"
                   >
-                    Some items are out of stock. Remove or save them for later to continue.
+                    {t("outOfStockBanner")}
                   </div>
                 )}
 
@@ -195,14 +195,12 @@ export default function CartPage() {
 
                 <div className="rounded-xl2 glass px-3.5 py-3 shadow-card2">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-ink-600">Subtotal</span>
+                    <span className="text-sm text-ink-600">{t("subtotal")}</span>
                     <span className="text-base font-semibold tabular-nums text-ink-900">
                       {formatPaise(itemsPaise)}
                     </span>
                   </div>
-                  <p className="mt-1 text-xs text-ink-600">
-                    Delivery &amp; taxes are calculated at checkout.
-                  </p>
+                  <p className="mt-1 text-xs text-ink-600">{t("taxesNote")}</p>
                 </div>
               </>
             )}
@@ -225,13 +223,15 @@ export default function CartPage() {
                 className="mb-2 rounded-pill bg-warning/10 px-3 py-1.5 text-center text-xs font-semibold text-warning"
                 aria-live="polite"
               >
-                Add {formatPaise(toMinPaise)} more to reach the {formatPaise(minOrderPaise)} minimum
-                order
+                {t("minOrder", {
+                  amount: formatPaise(toMinPaise),
+                  minimum: formatPaise(minOrderPaise),
+                })}
               </p>
             )}
             <div className="flex items-center gap-3">
               <div className="min-w-0">
-                <p className="text-xs text-ink-600">Subtotal</p>
+                <p className="text-xs text-ink-600">{t("subtotal")}</p>
                 <p className="text-base font-semibold tabular-nums text-ink-900">
                   {formatPaise(itemsPaise)}
                 </p>
@@ -239,11 +239,13 @@ export default function CartPage() {
               <div className="ml-auto flex-1">
                 {isEmpty || belowMin ? (
                   <Button className="w-full" disabled>
-                    {belowMin ? `Add ${formatPaise(toMinPaise)} to checkout` : "Proceed to checkout"}
+                    {belowMin
+                      ? t("addToCheckout", { amount: formatPaise(toMinPaise) })
+                      : t("checkout")}
                   </Button>
                 ) : (
                   <Link href="/checkout" className="block">
-                    <Button className={cn("w-full", CTA)}>Proceed to checkout</Button>
+                    <Button className={cn("w-full", CTA)}>{t("checkout")}</Button>
                   </Link>
                 )}
               </div>
@@ -270,6 +272,8 @@ function CartLine({
   onQty: (productId: string, qty: number) => void;
   onSave: (productId: string) => void;
 }) {
+  const t = useTranslations("cart");
+  const tCommon = useTranslations("common");
   const { product } = item;
   const saving = savingId === item.productId;
   const mrpTotal = product.mrpPaise * item.qty;
@@ -316,16 +320,14 @@ function CartLine({
           </div>
 
           {!product.inStock && (
-            <p className="mt-1.5 text-xs font-semibold text-danger">
-              Out of stock — remove it or save it for later
-            </p>
+            <p className="mt-1.5 text-xs font-semibold text-danger">{t("outOfStockLine")}</p>
           )}
 
           <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1.5">
             <div className="flex items-center rounded-pill bg-gradient-to-r from-primary-600 to-primary-500 text-white shadow-glow">
               <button
                 type="button"
-                aria-label={`Decrease quantity of ${product.name}`}
+                aria-label={t("decreaseQty", { name: product.name })}
                 className="press flex h-11 w-11 items-center justify-center rounded-pill text-xl leading-none disabled:opacity-50"
                 disabled={busy || saving}
                 onClick={() => onQty(item.productId, item.qty - 1)}
@@ -335,13 +337,13 @@ function CartLine({
               <span
                 className="min-w-5 text-center text-sm font-semibold tabular-nums"
                 aria-live="polite"
-                aria-label={`Quantity ${item.qty}`}
+                aria-label={t("quantity", { count: item.qty })}
               >
                 {item.qty}
               </span>
               <button
                 type="button"
-                aria-label={`Increase quantity of ${product.name}`}
+                aria-label={t("increaseQty", { name: product.name })}
                 className="press flex h-11 w-11 items-center justify-center rounded-pill text-xl leading-none disabled:opacity-50"
                 disabled={busy || saving || !product.inStock || item.qty >= product.maxPerOrder}
                 onClick={() => onQty(item.productId, Math.min(item.qty + 1, product.maxPerOrder))}
@@ -358,7 +360,7 @@ function CartLine({
                 onClick={() => onSave(item.productId)}
               >
                 <HeartGlyph />
-                {saving ? "Saving…" : "Save for later"}
+                {saving ? tCommon("saving") : t("saveForLater")}
               </button>
               <button
                 type="button"
@@ -366,7 +368,7 @@ function CartLine({
                 disabled={busy || saving}
                 onClick={() => onQty(item.productId, 0)}
               >
-                Remove
+                {tCommon("remove")}
               </button>
             </div>
           </div>
@@ -393,6 +395,10 @@ function SavedForLater({
   movingId: string | null;
   onMove: (productId: string) => void;
 }) {
+  const t = useTranslations("cart");
+  const tCommon = useTranslations("common");
+  const tProduct = useTranslations("product");
+
   if (isLoading) {
     return (
       <div className="pt-2">
@@ -408,13 +414,13 @@ function SavedForLater({
   if (isError) {
     return (
       <div className="mt-2 flex items-center justify-between gap-3 rounded-xl2 border border-line bg-surface px-3.5 py-3">
-        <p className="text-xs text-ink-600">Couldn’t load your saved items.</p>
+        <p className="text-xs text-ink-600">{t("savedLoadError")}</p>
         <button
           type="button"
           onClick={onRetry}
           className="press min-h-[44px] shrink-0 px-2 text-xs font-semibold text-primary-700"
         >
-          Retry
+          {tCommon("retry")}
         </button>
       </div>
     );
@@ -425,8 +431,8 @@ function SavedForLater({
   return (
     <Reveal as="section" className="pt-4">
       <div className="mb-2 flex items-baseline justify-between px-1">
-        <h2 className="text-sm font-semibold text-ink-900">Saved for later</h2>
-        <span className="text-xs text-ink-600">{entries.length} saved</span>
+        <h2 className="text-sm font-semibold text-ink-900">{t("savedForLater")}</h2>
+        <span className="text-xs text-ink-600">{t("savedCount", { count: entries.length })}</span>
       </div>
       <ul className="space-y-2">
         {entries.map((entry) => {
@@ -451,7 +457,9 @@ function SavedForLater({
                 </Link>
                 <p className="text-xs tabular-nums text-ink-600">
                   {formatPaise(p.pricePaise)}
-                  {!p.inStock && <span className="ml-1.5 text-danger">Out of stock</span>}
+                  {!p.inStock && (
+                    <span className="ml-1.5 text-danger">{tProduct("outOfStock")}</span>
+                  )}
                 </p>
               </div>
               <Button
@@ -461,7 +469,7 @@ function SavedForLater({
                 disabled={!p.inStock}
                 onClick={() => onMove(p.id)}
               >
-                {p.inStock ? "Move to cart" : "Unavailable"}
+                {p.inStock ? t("moveToCart") : t("unavailable")}
               </Button>
             </li>
           );
@@ -486,6 +494,7 @@ function FreeDeliveryBar({
   itemsPaise: number;
   thresholdPaise: number;
 }) {
+  const t = useTranslations("cart");
   const unlocked = itemsPaise >= thresholdPaise;
   const remaining = Math.max(0, thresholdPaise - itemsPaise);
   const pct = Math.min(100, Math.round((itemsPaise / thresholdPaise) * 100));
@@ -505,12 +514,18 @@ function FreeDeliveryBar({
     >
       <p className="text-sm font-medium text-ink-900" aria-live="polite">
         {unlocked ? (
-          <span className="font-semibold text-success">🎉 Free delivery unlocked!</span>
+          <span className="font-semibold text-success">🎉 {t("freeDeliveryUnlocked")}</span>
         ) : (
-          <>
-            Add <span className="font-semibold text-primary-800">{formatPaise(remaining)}</span> more
-            for <span className="font-semibold text-primary-800">free delivery</span>
-          </>
+          // Both emphases travel inside the message rather than being wrapped
+          // around it in JSX: "free delivery" and the amount sit in opposite
+          // halves of the Hindi sentence. `t.rich` takes primitives for
+          // placeholders and functions only for tags, so the money is passed as
+          // a plain string and styled by its own <amt> tag.
+          t.rich("freeDeliveryProgress", {
+            amount: formatPaise(remaining),
+            amt: (chunks) => <span className="font-semibold text-primary-800">{chunks}</span>,
+            b: (chunks) => <span className="font-semibold text-primary-800">{chunks}</span>,
+          })
         )}
       </p>
       <div
@@ -519,7 +534,7 @@ function FreeDeliveryBar({
         aria-valuenow={pct}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label="Progress toward free delivery"
+        aria-label={t("freeDeliveryProgressLabel")}
       >
         <div
           className={cn(

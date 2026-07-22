@@ -2,6 +2,7 @@
 
 import { use, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Category,
@@ -31,6 +32,8 @@ const SHEET_FOCUSABLE =
 
 export default function ProductDetailPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = use(params);
+  const t = useTranslations("product");
+  const tc = useTranslations("common");
   const { user } = useAuth();
   const { qtyOf } = useCart();
   const qc = useQueryClient();
@@ -73,10 +76,10 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
       qc.setQueryData(["stock-alert", slug], res);
       toast.push({
         type: "success",
-        message: res.data.subscribed ? "We'll notify you when it's back" : "Alert removed",
+        message: res.data.subscribed ? t("alertOnToast") : t("alertRemovedToast"),
       });
     },
-    onError: () => toast.push({ type: "error", message: "Couldn't update the alert — try again" }),
+    onError: () => toast.push({ type: "error", message: t("alertError") }),
   });
 
   // Wishlist status — the batch endpoint, asked for this one product. The key is
@@ -105,10 +108,10 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
       void qc.invalidateQueries({ queryKey: ["wishlist-status"] });
       toast.push({
         type: "success",
-        message: res.data.wishlisted ? "Saved to your wishlist" : "Removed from your wishlist",
+        message: res.data.wishlisted ? t("wishlistAdded") : t("wishlistRemoved"),
       });
     },
-    onError: () => toast.push({ type: "error", message: "Couldn't update your wishlist — try again" }),
+    onError: () => toast.push({ type: "error", message: t("wishlistError") }),
   });
 
   // Refill reminders are listed whole (no per-product read) — match on productId.
@@ -128,10 +131,10 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
       setRefillOpen(false);
       toast.push({
         type: "success",
-        message: `Reminder set — we'll nudge you every ${res.data.intervalDays} days`,
+        message: t("refillSet", { count: res.data.intervalDays }),
       });
     },
-    onError: () => toast.push({ type: "error", message: "Couldn't set the reminder — try again" }),
+    onError: () => toast.push({ type: "error", message: t("refillSetError") }),
   });
 
   const cancelRefill = useMutation({
@@ -139,9 +142,9 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["refills"] });
       setRefillOpen(false);
-      toast.push({ type: "success", message: "Refill reminder turned off" });
+      toast.push({ type: "success", message: t("refillOff") });
     },
-    onError: () => toast.push({ type: "error", message: "Couldn't remove the reminder — try again" }),
+    onError: () => toast.push({ type: "error", message: t("refillOffError") }),
   });
 
   // "Similar products" — the product carries a categoryId (not a slug), so map
@@ -165,7 +168,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
   if (productQuery.isLoading) {
     return (
       <div className="min-h-dvh bg-mesh">
-        <TopBar title="Product" back />
+        <TopBar title={t("pageTitle")} back />
         <PdpSkeleton />
       </div>
     );
@@ -175,17 +178,17 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
   if (productQuery.error instanceof ApiError && productQuery.error.code === "NOT_FOUND") {
     return (
       <div className="min-h-dvh bg-mesh">
-        <TopBar title="Not found" back />
+        <TopBar title={t("notFoundTitle")} back />
         <div className="p-4">
           <EmptyState
-            title="Product not found"
-            hint="This item may no longer be available."
+            title={t("notFound")}
+            hint={t("notFoundHint")}
             action={
               <Link
                 href="/shop"
                 className="press inline-flex w-full items-center justify-center rounded-input bg-gradient-to-b from-primary-500 to-primary-700 px-3.5 py-2.5 text-sm font-semibold text-white shadow-glow"
               >
-                Browse products
+                {tc("browseProducts")}
               </Link>
             }
           />
@@ -197,13 +200,13 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
   if (productQuery.isError || !product) {
     return (
       <div className="min-h-dvh bg-mesh">
-        <TopBar title="Product" back />
+        <TopBar title={t("pageTitle")} back />
         <div className="p-4">
           <ErrorState
             message={
               productQuery.error instanceof Error
                 ? productQuery.error.message
-                : "Could not load this product"
+                : t("loadError")
             }
             onRetry={() => productQuery.refetch()}
           />
@@ -222,11 +225,11 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
   const inCart = qtyOf(product.id) > 0;
 
   const medicalSections = [
-    { key: "description", title: "Description", body: product.description, open: true },
-    { key: "uses", title: "Uses", body: product.uses, open: true },
-    { key: "directions", title: "Directions for use", body: product.directions, open: false },
-    { key: "sideEffects", title: "Side effects", body: product.sideEffects, open: false },
-    { key: "storageInfo", title: "Storage", body: product.storageInfo, open: false },
+    { key: "description", title: t("sectionDescription"), body: product.description, open: true },
+    { key: "uses", title: t("sectionUses"), body: product.uses, open: true },
+    { key: "directions", title: t("sectionDirections"), body: product.directions, open: false },
+    { key: "sideEffects", title: t("sectionSideEffects"), body: product.sideEffects, open: false },
+    { key: "storageInfo", title: t("sectionStorage"), body: product.storageInfo, open: false },
   ].filter((s) => s.body.trim().length > 0);
 
   const hasMedicalInfo =
@@ -237,13 +240,13 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
   const shareName = product.name; // `product` is narrowed here; capture for the async closure below
   async function share() {
     const url = typeof window !== "undefined" ? window.location.href : "";
-    const data = { title: shareName, text: `${shareName} on MedRush`, url };
+    const data = { title: shareName, text: t("shareText", { name: shareName }), url };
     try {
       if (typeof navigator !== "undefined" && navigator.share) {
         await navigator.share(data);
       } else if (typeof navigator !== "undefined" && navigator.clipboard) {
         await navigator.clipboard.writeText(url);
-        toast.push({ type: "success", message: "Link copied to clipboard" });
+        toast.push({ type: "success", message: t("linkCopied") });
       }
     } catch {
       // User dismissed the share sheet — nothing to do.
@@ -263,7 +266,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
                 onClick={() => toggleWishlist.mutate(!wishlisted)}
                 disabled={toggleWishlist.isPending}
                 aria-pressed={wishlisted}
-                aria-label={wishlisted ? "Remove from wishlist" : "Save to wishlist"}
+                aria-label={wishlisted ? t("removeFromWishlist") : t("saveToWishlist")}
                 className={cn(
                   "press flex h-11 w-11 items-center justify-center rounded-pill transition-colors disabled:opacity-60",
                   wishlisted ? "text-danger" : "text-ink-600 hover:bg-surface-2",
@@ -274,7 +277,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
             ) : (
               <Link
                 href="/login"
-                aria-label="Sign in to save to wishlist"
+                aria-label={t("signInToWishlist")}
                 className="press flex h-11 w-11 items-center justify-center rounded-pill text-ink-600 hover:bg-surface-2"
               >
                 <HeartIcon className="h-6 w-6" />
@@ -283,7 +286,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
             <button
               type="button"
               onClick={() => void share()}
-              aria-label="Share product"
+              aria-label={t("share")}
               className="press flex h-11 w-11 items-center justify-center rounded-pill text-ink-600 hover:bg-surface-2"
             >
               <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -303,12 +306,12 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
           <ProductImage url={heroUrl} name={product.name} />
           {discounted && (
             <span className="absolute left-3 top-3 rounded-pill bg-gradient-to-b from-accent to-[#D97706] px-2.5 py-1 text-xs font-bold text-white shadow-md">
-              {discountPct}% OFF
+              {t("percentOff", { pct: discountPct })}
             </span>
           )}
           {!product.inStock && (
             <span className="absolute right-3 top-3 rounded-pill bg-ink-900/80 px-2.5 py-1 text-xs font-semibold text-white backdrop-blur">
-              Out of stock
+              {t("outOfStock")}
             </span>
           )}
         </div>
@@ -319,7 +322,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
                 key={url}
                 type="button"
                 onClick={() => setImgIdx(i)}
-                aria-label={`View image ${i + 1} of ${gallery.length}`}
+                aria-label={t("viewImage", { index: i + 1, total: gallery.length })}
                 aria-current={i === imgIdx}
                 className={cn(
                   "press h-14 w-14 shrink-0 overflow-hidden rounded-card border-2 bg-surface transition-colors",
@@ -341,7 +344,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
           {(product.requiresRx || product.isColdChain) && (
             <div className="mt-3 flex flex-wrap gap-2">
               {product.requiresRx && <Badge tone="violet">Rx</Badge>}
-              {product.isColdChain && <Badge tone="blue">Cold chain</Badge>}
+              {product.isColdChain && <Badge tone="blue">{t("coldChain")}</Badge>}
             </div>
           )}
 
@@ -356,16 +359,16 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
             )}
             {discounted && (
               <span className="mb-1 rounded-pill bg-success/10 px-2 py-0.5 text-xs font-semibold text-success">
-                Save {formatPaise(product.mrpPaise - product.pricePaise)}
+                {t("saveAmount", { amount: formatPaise(product.mrpPaise - product.pricePaise) })}
               </span>
             )}
           </div>
-          <p className="mt-1 text-xs text-ink-400">Incl. GST {product.gstRatePct}%</p>
+          <p className="mt-1 text-xs text-ink-400">{t("inclGst", { pct: product.gstRatePct })}</p>
 
           {product.composition && (
             <div className="mt-4 rounded-card bg-mint px-3 py-2.5">
               <h2 className="text-[11px] font-semibold uppercase tracking-wide text-primary-800">
-                Composition
+                {t("composition")}
               </h2>
               <p className="mt-0.5 text-sm font-medium text-ink-900">{product.composition}</p>
             </div>
@@ -394,12 +397,10 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-sm font-semibold text-ink-900">
-                {refill ? `Refill reminder — every ${refill.intervalDays} days` : "Remind me to refill"}
+                {refill ? t("refillActive", { count: refill.intervalDays }) : t("refillPrompt")}
               </span>
               <span className="block text-xs text-ink-600">
-                {refill
-                  ? "Tap to change the interval or turn it off"
-                  : "Never run out — we'll nudge you before it does"}
+                {refill ? t("refillActiveHint") : t("refillPromptHint")}
               </span>
             </span>
             <ChevronIcon className="h-4 w-4 shrink-0 -rotate-90 text-ink-400" />
@@ -413,8 +414,8 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
               <ClockIcon className="h-5 w-5" />
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-ink-900">Remind me to refill</span>
-              <span className="block text-xs text-ink-600">Sign in to set a refill reminder</span>
+              <span className="block text-sm font-semibold text-ink-900">{t("refillPrompt")}</span>
+              <span className="block text-xs text-ink-600">{t("refillSignInHint")}</span>
             </span>
             <ChevronIcon className="h-4 w-4 shrink-0 -rotate-90 text-ink-400" />
           </Link>
@@ -425,7 +426,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
           <div className="mt-3 rounded-xl2 border border-warning/30 bg-warning/5 px-4 py-3.5 shadow-card2">
             {/* Amber TEXT is darkened to #B45309 — the #D97706 warning token only
                 clears ~2.9:1 on this tint, below the 4.5:1 floor. */}
-            <p className="text-sm font-semibold text-[#B45309]">Currently out of stock</p>
+            <p className="text-sm font-semibold text-[#B45309]">{t("currentlyOutOfStock")}</p>
             {user ? (
               <Button
                 variant="secondary"
@@ -433,18 +434,18 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
                 loading={toggleAlert.isPending || (stockAlertEnabled && stockAlertQuery.isLoading)}
                 onClick={() => toggleAlert.mutate()}
               >
-                {subscribed ? "✓ We'll notify you — tap to cancel" : "Notify me when it's back"}
+                {subscribed ? t("notifyCancel") : t("notifyMe")}
               </Button>
             ) : (
               <Link
                 href="/login"
                 className="press mt-2 block rounded-input border border-primary-600 px-3.5 py-2.5 text-center text-sm font-semibold text-primary-700"
               >
-                Sign in to get a back-in-stock alert
+                {t("signInForStockAlert")}
               </Link>
             )}
             <p className="sr-only" aria-live="polite">
-              {subscribed ? "Back-in-stock alert on" : "Back-in-stock alert off"}
+              {subscribed ? t("stockAlertOn") : t("stockAlertOff")}
             </p>
           </div>
         )}
@@ -457,11 +458,10 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
               <span className="flex h-6 w-6 items-center justify-center rounded-pill bg-rx/10 text-[11px] font-bold">
                 Rx
               </span>
-              Prescription required
+              {t("prescriptionRequired")}
             </p>
             <p className="mt-1.5 text-sm leading-relaxed text-ink-600">
-              This is a prescription medicine. You can add it to your cart now and upload a valid
-              prescription after placing the order — our pharmacist will verify it before dispatch.
+              {t("prescriptionNote")}
             </p>
           </div>
         )}
@@ -471,7 +471,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
           <div className="mt-3 rounded-xl2 border border-warning/40 bg-warning/10 px-4 py-3.5 shadow-card2">
             <p className="flex items-center gap-2 text-sm font-bold text-[#B45309]">
               <WarningIcon className="h-5 w-5" />
-              Warnings &amp; precautions
+              {t("warningsHeading")}
             </p>
             <p className="mt-1.5 whitespace-pre-line text-sm leading-relaxed text-ink-900">
               {product.warnings}
@@ -481,7 +481,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
 
         {hasMedicalInfo && (
           <Reveal as="section" className="mt-6">
-            <h2 className="mb-2 text-sm font-semibold text-ink-900">Product information</h2>
+            <h2 className="mb-2 text-sm font-semibold text-ink-900">{t("productInformation")}</h2>
             {medicalSections.length > 0 && (
               <div className="divide-y divide-line overflow-hidden rounded-xl2 border border-white/70 bg-surface shadow-card2">
                 {medicalSections.map((s) => (
@@ -491,11 +491,15 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
             )}
             {product.manufacturer && (
               <p className="mt-2 px-1 text-xs text-ink-600">
-                <span className="font-medium text-ink-900">Manufacturer:</span> {product.manufacturer}
+                <span className="font-medium text-ink-900">{t("manufacturerLabel")}</span>{" "}
+                {product.manufacturer}
               </p>
             )}
+            {/* A generic "ask your doctor" disclaimer, not drug-specific clinical
+                copy — so it IS translated. Left in English it would be the one
+                unreadable line on an otherwise-Hindi screen, which is worse. */}
             <p className="mt-2 px-1 text-xs leading-relaxed text-ink-400">
-              Information is for reference; follow your doctor&apos;s advice.
+              {t("referenceDisclaimer")}
             </p>
           </Reveal>
         )}
@@ -503,10 +507,11 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
         {/* Same-salt substitutes — the §17 v1.1 generics play; price-led. */}
         {substitutes.length > 0 && (
           <Reveal as="section" className="mt-6">
-            <h2 className="mb-1 text-sm font-semibold text-ink-900">Substitutes with the same salt</h2>
+            <h2 className="mb-1 text-sm font-semibold text-ink-900">{t("substitutes")}</h2>
             <p className="mb-2.5 text-xs text-ink-600">
-              Same composition ({product.composition}) — always confirm with your doctor before
-              switching.
+              {/* The composition value itself is interpolated verbatim; only the
+                  surrounding caution is translated. */}
+              {t("substitutesCaution", { composition: product.composition })}
             </p>
             <div className="no-scrollbar -mx-4 flex gap-3 overflow-x-auto px-4 pb-1">
               {substitutes.map((p) => (
@@ -521,7 +526,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
         {/* Similar products rail — same category (substitutes excluded). */}
         {similar.filter((p) => !substitutes.some((s) => s.id === p.id)).length > 0 && (
           <Reveal as="section" className="mt-6">
-            <h2 className="mb-2.5 text-sm font-semibold text-ink-900">Similar products</h2>
+            <h2 className="mb-2.5 text-sm font-semibold text-ink-900">{t("similar")}</h2>
             <div className="no-scrollbar -mx-4 flex gap-3 overflow-x-auto px-4 pb-1">
               {similar
                 .filter((p) => !substitutes.some((s) => s.id === p.id))
@@ -551,13 +556,13 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
               href="/cart"
               className="press whitespace-nowrap rounded-input bg-gradient-to-b from-primary-500 to-primary-700 px-4 py-2.5 text-sm font-semibold text-white shadow-glow"
             >
-              Go to cart
+              {t("goToCart")}
             </Link>
           )}
         </div>
         {product.inStock && product.maxPerOrder <= 10 && (
           <p className="mt-1.5 text-center text-[11px] text-ink-600">
-            Max {product.maxPerOrder} per order
+            {t("maxPerOrder", { count: product.maxPerOrder })}
           </p>
         )}
       </div>
@@ -641,6 +646,8 @@ function RefillSheet({
   onCancel: (id: string) => void;
   onClose: () => void;
 }) {
+  const t = useTranslations("product");
+  const tc = useTranslations("common");
   const [days, setDays] = useState<number>(current?.intervalDays ?? 30);
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -697,7 +704,7 @@ function RefillSheet({
     <div className="fixed inset-0 z-50 flex items-end justify-center">
       <button
         type="button"
-        aria-label="Close"
+        aria-label={tc("close")}
         onClick={onClose}
         className="absolute inset-0 h-full w-full cursor-default bg-ink-900/40 backdrop-blur-sm"
       />
@@ -712,7 +719,7 @@ function RefillSheet({
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <h2 id={titleId} className="text-base font-semibold text-ink-900">
-              Refill reminder
+              {t("refillSheetTitle")}
             </h2>
             <p className="mt-0.5 truncate text-sm text-ink-600">{productName}</p>
           </div>
@@ -720,7 +727,7 @@ function RefillSheet({
             ref={closeRef}
             type="button"
             onClick={onClose}
-            aria-label="Close refill reminder"
+            aria-label={t("refillSheetClose")}
             className="press -mr-1 -mt-1 flex h-11 w-11 items-center justify-center rounded-pill text-ink-600 hover:bg-surface-2"
           >
             <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
@@ -731,7 +738,7 @@ function RefillSheet({
 
         <fieldset className="mt-4">
           <legend className="text-xs font-semibold uppercase tracking-wide text-ink-400">
-            Remind me every
+            {t("refillEvery")}
           </legend>
           <div className="mt-2 grid grid-cols-3 gap-2">
             {REFILL_INTERVALS.map((d) => (
@@ -753,14 +760,14 @@ function RefillSheet({
                   className="sr-only"
                 />
                 {d}
-                <span className="text-[11px] font-medium">days</span>
+                <span className="text-[11px] font-medium">{t("days")}</span>
               </label>
             ))}
           </div>
         </fieldset>
 
         <p className="mt-3 text-xs leading-relaxed text-ink-600">
-          We&apos;ll send a reminder {days} days from today, then every {days} days after that.
+          {t("refillSchedule", { count: days })}
         </p>
 
         <Button
@@ -768,7 +775,7 @@ function RefillSheet({
           loading={saving}
           onClick={() => onSave(days)}
         >
-          {current ? "Update reminder" : "Set reminder"}
+          {current ? t("refillUpdate") : t("refillCreate")}
         </Button>
         {current && (
           <Button
@@ -777,7 +784,7 @@ function RefillSheet({
             loading={cancelling}
             onClick={() => onCancel(current.id)}
           >
-            Turn off reminder
+            {t("refillTurnOff")}
           </Button>
         )}
       </div>

@@ -7,7 +7,7 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start -p 3000",
-    "lint": "eslint .",
+    "lint": "eslint . && node scripts/check-messages.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -19,6 +19,7 @@
     "firebase": "^12.16.0",
     "maplibre-gl": "^4.7.1",
     "next": "^15.1.6",
+    "next-intl": "^4.13.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "socket.io-client": "^4.8.1",

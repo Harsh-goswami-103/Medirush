@@ -96,7 +96,11 @@ test("customer places a COD order for an Rx product and uploads a prescription",
   await expect(title).toBeVisible();
   orderNo = ((await title.textContent()) ?? "").trim();
   expect(orderNo).toMatch(ORDER_NO_RE);
-  await expect(page.getByText("RX REVIEW", { exact: true }).first()).toBeVisible();
+  // Enum, not label — the customer-facing badge now reads "Prescription review".
+  await expect(page.getByTestId("order-status").first()).toHaveAttribute(
+    "data-value",
+    "RX_REVIEW",
+  );
   await expect(page.getByText("Rx pending")).toBeVisible();
 
   // Upload a prescription image through the hidden file input.

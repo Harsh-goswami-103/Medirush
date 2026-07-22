@@ -1,3 +1,9 @@
+import createNextIntlPlugin from "next-intl/plugin";
+
+// Routing-free next-intl: the locale comes from a cookie (src/i18n/request.ts),
+// so URLs are unchanged and the PWA's start_url keeps working.
+const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -11,4 +17,4 @@ const nextConfig = {
   productionBrowserSourceMaps: true,
 };
 
-export default nextConfig;
+export default withNextIntl(nextConfig);

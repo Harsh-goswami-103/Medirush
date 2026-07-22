@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useCart } from "@/lib/cart";
 import { useAuth } from "@/lib/auth";
 import { useUnreadCount } from "@/lib/notifications";
@@ -26,16 +27,23 @@ function Icon({ path, filled }: { path: string; filled?: boolean }) {
   );
 }
 
-const TABS = [
-  { href: "/shop", label: "Home", icon: "M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10" },
-  { href: "/orders", label: "Orders", icon: "M7 3h10l2 4v13a1 1 0 01-1 1H6a1 1 0 01-1-1V7zM5 7h14M9 12h6M9 16h6" },
-  { href: "/cart", label: "Cart", icon: "M4 5h2l2.4 11.2a1 1 0 001 .8h7.7a1 1 0 001-.8L21 8H7M9 21a1 1 0 100-2 1 1 0 000 2zm8 0a1 1 0 100-2 1 1 0 000 2z", badge: true },
-  { href: "/account", label: "Account", icon: "M12 12a4 4 0 100-8 4 4 0 000 8zM5 21a7 7 0 0114 0" },
+const TABS: {
+  href: string;
+  /** Key in the `nav` message namespace. */
+  label: "home" | "orders" | "cart" | "account";
+  icon: string;
+  badge?: boolean;
+}[] = [
+  { href: "/shop", label: "home", icon: "M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10" },
+  { href: "/orders", label: "orders", icon: "M7 3h10l2 4v13a1 1 0 01-1 1H6a1 1 0 01-1-1V7zM5 7h14M9 12h6M9 16h6" },
+  { href: "/cart", label: "cart", icon: "M4 5h2l2.4 11.2a1 1 0 001 .8h7.7a1 1 0 001-.8L21 8H7M9 21a1 1 0 100-2 1 1 0 000 2zm8 0a1 1 0 100-2 1 1 0 000 2z", badge: true },
+  { href: "/account", label: "account", icon: "M12 12a4 4 0 100-8 4 4 0 000 8zM5 21a7 7 0 0114 0" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { itemCount } = useCart();
+  const t = useTranslations("nav");
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-md flex-col bg-surface shadow-lg">
@@ -45,26 +53,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <nav className="fixed bottom-0 left-1/2 z-40 w-full max-w-md -translate-x-1/2 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)]">
         <div className="grid grid-cols-4">
-          {TABS.map((t) => {
-            const active = pathname === t.href || pathname.startsWith(`${t.href}/`);
+          {TABS.map((tab) => {
+            const active = pathname === tab.href || pathname.startsWith(`${tab.href}/`);
             return (
               <Link
-                key={t.href}
-                href={t.href}
+                key={tab.href}
+                href={tab.href}
                 className={cn(
                   "flex flex-col items-center gap-0.5 py-2 text-[11px] font-medium",
                   active ? "text-primary-700" : "text-ink-400",
                 )}
               >
                 <span className="relative">
-                  <Icon path={t.icon} filled={active} />
-                  {t.badge && itemCount > 0 && (
+                  <Icon path={tab.icon} filled={active} />
+                  {tab.badge && itemCount > 0 && (
                     <span className="absolute -right-2.5 -top-1 min-w-4 rounded-pill bg-primary-600 px-1 text-center text-[10px] font-semibold leading-4 text-white">
                       {itemCount}
                     </span>
                   )}
                 </span>
-                {t.label}
+                {t(tab.label)}
               </Link>
             );
           })}
@@ -84,10 +92,11 @@ export function TopBar({
   back?: boolean;
   right?: React.ReactNode;
 }) {
+  const t = useTranslations("nav");
   return (
     <header className="sticky top-0 z-30 flex items-center gap-2 border-b border-line bg-surface/95 px-4 py-3 backdrop-blur">
       {back && (
-        <Link href=".." className="-ml-1 text-ink-600" aria-label="Back">
+        <Link href=".." className="-ml-1 text-ink-600" aria-label={t("back")}>
           <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M15 18l-6-6 6-6" />
           </svg>
@@ -108,13 +117,14 @@ export function TopBar({
 export function NotificationBell({ tone = "default" }: { tone?: "default" | "invert" }) {
   const { user } = useAuth();
   const { data } = useUnreadCount();
+  const t = useTranslations("nav");
   if (!user) return null;
 
   const count = data?.data.count ?? 0;
   return (
     <Link
       href="/notifications"
-      aria-label={count > 0 ? `Notifications, ${count} unread` : "Notifications"}
+      aria-label={count > 0 ? t("notificationsUnread", { count }) : t("notifications")}
       className={cn("relative -mr-1 shrink-0 p-1", tone === "invert" ? "text-white" : "text-ink-600")}
     >
       <svg

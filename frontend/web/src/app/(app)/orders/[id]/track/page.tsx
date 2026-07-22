@@ -5,12 +5,13 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
+import { useFormatter, useTranslations } from "next-intl";
 import type { OrderStatus, TrackOrderResult } from "@medrush/contracts";
 import { api } from "@/lib/api";
 import { whatsappUrl } from "@/lib/env";
 import { useAuth } from "@/lib/auth";
 import { useOrderLive } from "@/lib/socket";
-import { formatDateTime, timeAgo } from "@/lib/format";
+import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { TopBar } from "@/components/AppShell";
 import { ErrorState, OrderStatusBadge, Skeleton, Spinner } from "@/components/ui";
@@ -21,18 +22,14 @@ const TrackMap = dynamic(() => import("@/components/TrackMap").then((m) => m.Tra
   loading: () => <div className="skeleton h-full w-full" />,
 });
 
-/** Happy-path timeline shown as a vertical stepper. */
+/**
+ * Happy-path timeline shown as a vertical stepper.
+ *
+ * The step labels live in the `trackStatus` catalog, keyed by the enum value —
+ * the stepper only ever renders these six, so adding a member here without a
+ * matching message fails typecheck instead of rendering a raw identifier.
+ */
 const HAPPY_PATH = ["PLACED", "PACKING", "READY", "ASSIGNED", "PICKED_UP", "DELIVERED"] as const;
-type HappyStep = (typeof HAPPY_PATH)[number];
-
-const STEP_LABEL: Record<HappyStep, string> = {
-  PLACED: "Order placed",
-  PACKING: "Packing your order",
-  READY: "Ready for pickup",
-  ASSIGNED: "Rider assigned",
-  PICKED_UP: "Picked up",
-  DELIVERED: "Delivered",
-};
 
 /** Where the live status sits on the happy path (−1 for pre-placement / cancelled). */
 function currentStepIndex(status: OrderStatus): number {
@@ -59,6 +56,11 @@ function currentStepIndex(status: OrderStatus): number {
 export default function TrackOrderPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const t = useTranslations("orders");
+  const tStep = useTranslations("trackStatus");
+  // Intl.RelativeTimeFormat via next-intl: Hindi relative time for free, rather
+  // than hand-rolling "2m ago" strings into the catalog.
+  const format = useFormatter();
   const { user, loading } = useAuth();
   const { connected } = useOrderLive(id);
 
@@ -87,7 +89,7 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
   const idx = track ? currentStepIndex(track.status) : -1;
   const cancelled = track?.status === "CANCELLED";
   // null when NEXT_PUBLIC_SUPPORT_PHONE is unset — the CTA is hidden then.
-  const supportUrl = whatsappUrl(`Hi, I need help with my order (${id}).`);
+  const supportUrl = whatsappUrl(t("supportMessageTrack", { id }));
   const driverPoint = track?.driverLocation
     ? { lat: track.driverLocation.lat, lng: track.driverLocation.lng }
     : null;
@@ -99,7 +101,7 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
 
   return (
     <div className="min-h-dvh bg-mesh">
-      <TopBar back title="Track order" right={<LiveIndicator connected={connected} />} />
+      <TopBar back title={t("trackOrder")} right={<LiveIndicator connected={connected} />} />
 
       <div className="space-y-4 p-4 pb-8">
         {trackQuery.isError ? (
@@ -126,13 +128,13 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
               className="flex items-center justify-between gap-2 rounded-pill glass px-4 py-2.5 shadow-sm"
               aria-live="polite"
             >
-              <p className="text-sm font-medium text-ink-600">Current status</p>
+              <p className="text-sm font-medium text-ink-600">{t("currentStatus")}</p>
               <OrderStatusBadge status={track.status} />
             </div>
 
             {cancelled && (
               <div className="rounded-xl2 border border-danger/20 bg-danger/5 px-4 py-3 text-sm font-medium text-danger">
-                This order was cancelled.
+                {t("trackCancelled")}
               </div>
             )}
 
@@ -205,7 +207,7 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
                                 : "font-medium text-ink-900",
                           )}
                         >
-                          {STEP_LABEL[step]}
+                          {tStep(step)}
                         </p>
                         {at && <p className="-mt-2 text-xs text-ink-400">{formatDateTime(at)}</p>}
                         {state === "current" && !cancelled && (
@@ -214,7 +216,7 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
                               className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-600"
                               aria-hidden
                             />
-                            In progress
+                            {t("inProgress")}
                           </p>
                         )}
                       </div>
@@ -228,7 +230,7 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
             {track.driver && (
               <Panel className="p-4">
                 <p className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-                  Delivery partner
+                  {t("deliveryPartner")}
                 </p>
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-3">
@@ -240,7 +242,7 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
                     </span>
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold text-ink-900">
-                        {track.driver.name ?? "Assigned"}
+                        {track.driver.name ?? t("driverAssigned")}
                       </p>
                       <p className="truncate text-xs text-ink-600">
                         {track.driver.vehicleType}
@@ -248,17 +250,19 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
                       </p>
                       {track.driverLocation && (
                         <p className="mt-0.5 text-xs text-ink-400">
-                          Live · updated {timeAgo(track.driverLocation.ts)}
+                          {t("liveUpdated", { ago: format.relativeTime(new Date(track.driverLocation.ts)) })}
                         </p>
                       )}
                     </div>
                   </div>
                   <a
                     href={`tel:${track.driver.phone}`}
-                    aria-label={`Call ${track.driver.name ?? "the delivery partner"}`}
+                    aria-label={t("callDriverAria", {
+                      name: track.driver.name ?? t("theDeliveryPartner"),
+                    })}
                     className="press inline-flex min-h-[44px] shrink-0 items-center rounded-pill border border-primary-600/40 bg-primary-50 px-4 text-sm font-semibold text-primary-800"
                   >
-                    Call
+                    {t("call")}
                   </a>
                 </div>
               </Panel>
@@ -269,7 +273,7 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
                 href={`/orders/${id}`}
                 className="press inline-flex min-h-[44px] w-full items-center justify-center rounded-pill border border-line bg-surface px-4 text-sm font-semibold text-ink-900 hover:bg-surface-2"
               >
-                View order details
+                {t("viewOrderDetails")}
               </Link>
               {supportUrl && (
                 <a
@@ -278,7 +282,7 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
                   rel="noopener noreferrer"
                   className="press inline-flex min-h-[44px] w-full items-center justify-center rounded-pill px-4 text-sm font-medium text-ink-600 hover:bg-surface-2"
                 >
-                  Need help? Chat on WhatsApp
+                  {t("needHelpWhatsapp")}
                 </a>
               )}
             </div>
@@ -302,6 +306,8 @@ function Panel({ className, children }: { className?: string; children: ReactNod
 
 /** ETA banner — "Arriving in ~N min", or an accented "Driver arriving" when close. */
 function EtaBanner({ status, etaMinutes }: { status: OrderStatus; etaMinutes: number | null }) {
+  // Hook first: both branches below return early, but the hook order must not depend on them.
+  const t = useTranslations("orders");
   const arriving = status === "PICKED_UP" && (etaMinutes == null || etaMinutes <= 2);
   if (arriving) {
     return (
@@ -310,7 +316,7 @@ function EtaBanner({ status, etaMinutes }: { status: OrderStatus; etaMinutes: nu
         aria-live="polite"
       >
         <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-accent" aria-hidden />
-        <p className="text-base font-bold text-warning">Driver arriving</p>
+        <p className="text-base font-bold text-warning">{t("driverArriving")}</p>
       </div>
     );
   }
@@ -320,9 +326,9 @@ function EtaBanner({ status, etaMinutes }: { status: OrderStatus; etaMinutes: nu
         className="flex items-baseline justify-between gap-3 rounded-xl2 bg-gradient-to-br from-primary-800 to-primary-700 px-4 py-3.5 shadow-glow"
         aria-live="polite"
       >
-        <p className="text-sm font-medium text-white/90">Arriving in</p>
+        <p className="text-sm font-medium text-white/90">{t("arrivingIn")}</p>
         <p className="text-2xl font-bold tabular-nums text-white">
-          ~{etaMinutes} <span className="text-base font-semibold">min</span>
+          ~{etaMinutes} <span className="text-base font-semibold">{t("minutesShort")}</span>
         </p>
       </div>
     );
@@ -332,6 +338,7 @@ function EtaBanner({ status, etaMinutes }: { status: OrderStatus; etaMinutes: nu
 
 /** Socket connection pill: green “Live” when connected, amber pulse otherwise. */
 function LiveIndicator({ connected }: { connected: boolean }) {
+  const t = useTranslations("orders");
   return (
     <span
       className={cn(
@@ -346,7 +353,7 @@ function LiveIndicator({ connected }: { connected: boolean }) {
         )}
         aria-hidden
       />
-      {connected ? "Live" : "Reconnecting"}
+      {connected ? t("live") : t("reconnecting")}
     </span>
   );
 }

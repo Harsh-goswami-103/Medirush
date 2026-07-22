@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useInfiniteQuery } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import type { OrderStatus, OrderSummary } from "@medrush/contracts";
 import { api, qs } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -23,10 +24,10 @@ import {
 } from "@/components/ui";
 
 /** History filter tabs — the API takes a single `status`, so tabs map 1:1. */
-const TABS: { label: string; status?: OrderStatus }[] = [
-  { label: "All" },
-  { label: "Delivered", status: "DELIVERED" },
-  { label: "Cancelled", status: "CANCELLED" },
+const TABS: { labelKey: "tabAll" | "tabDelivered" | "tabCancelled"; status?: OrderStatus }[] = [
+  { labelKey: "tabAll" },
+  { labelKey: "tabDelivered", status: "DELIVERED" },
+  { labelKey: "tabCancelled", status: "CANCELLED" },
 ];
 
 /** Statuses whose live-tracking screen is worth a one-tap shortcut from the list. */
@@ -47,6 +48,8 @@ const ACCENT: Record<OrderStatus, string> = {
 
 /** Order history — GET /v1/orders?status&cursor&limit. Auth-gated (redirects to /login). */
 export default function OrdersPage() {
+  const t = useTranslations("orders");
+  const tc = useTranslations("common");
   const router = useRouter();
   const { user, loading } = useAuth();
   const reorder = useReorder();
@@ -85,18 +88,18 @@ export default function OrdersPage() {
 
   return (
     <div className="min-h-dvh bg-mesh">
-      <TopBar title="Your orders" />
+      <TopBar title={t("title")} />
 
       {/* Status filter — segmented control on a frosted rail. */}
       <div className="px-4 pt-4">
         <div
           role="group"
-          aria-label="Filter orders by status"
+          aria-label={t("filterByStatus")}
           className="no-scrollbar flex gap-1 overflow-x-auto rounded-pill glass p-1 shadow-glass"
         >
-          {TABS.map((t, i) => (
+          {TABS.map((tabDef, i) => (
             <button
-              key={t.label}
+              key={tabDef.labelKey}
               type="button"
               aria-pressed={i === tab}
               onClick={() => setTab(i)}
@@ -107,7 +110,7 @@ export default function OrdersPage() {
                   : "text-ink-600 hover:bg-white/70 hover:text-primary-700",
               )}
             >
-              {t.label}
+              {t(tabDef.labelKey)}
             </button>
           ))}
         </div>
@@ -124,12 +127,18 @@ export default function OrdersPage() {
         ) : orders.length === 0 ? (
           <EmptyState
             icon={<BagIcon />}
-            title={status ? `No ${status.toLowerCase()} orders` : "No orders yet"}
-            hint="Your orders will show up here once you place one."
+            title={
+              status === "DELIVERED"
+                ? t("noneDelivered")
+                : status === "CANCELLED"
+                  ? t("noneCancelled")
+                  : t("none")
+            }
+            hint={t("noneHint")}
             action={
               <Link href="/shop" className="block">
                 <Button className="press w-full bg-gradient-to-r from-primary-700 to-primary-600 shadow-glow">
-                  Browse products
+                  {tc("browseProducts")}
                 </Button>
               </Link>
             }
@@ -170,7 +179,7 @@ export default function OrdersPage() {
                       </div>
                       <div className="mt-3 flex items-end justify-between gap-3">
                         <span className="text-xs leading-relaxed text-ink-600">
-                          {o.itemCount} item{o.itemCount === 1 ? "" : "s"}
+                          {t("itemCount", { count: o.itemCount })}
                           <br />
                           {formatDateTime(o.deliveredAt ?? o.createdAt)}
                         </span>
@@ -188,7 +197,7 @@ export default function OrdersPage() {
                             className="press inline-flex min-h-[40px] flex-1 items-center justify-center gap-1.5 rounded-pill bg-gradient-to-r from-primary-700 to-primary-600 px-3 text-sm font-semibold text-white shadow-glow"
                           >
                             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" aria-hidden />
-                            Track order
+                            {t("trackOrder")}
                           </Link>
                         )}
                         {repeatable && (
@@ -198,7 +207,7 @@ export default function OrdersPage() {
                             disabled={reorderingId === o.id}
                             onClick={() => reorder.mutate({ orderId: o.id })}
                           >
-                            {reorderingId === o.id ? "Adding…" : "Order again"}
+                            {reorderingId === o.id ? t("adding") : t("orderAgain")}
                           </button>
                         )}
                       </div>
@@ -216,7 +225,7 @@ export default function OrdersPage() {
                   loading={ordersQuery.isFetchingNextPage}
                   onClick={() => void ordersQuery.fetchNextPage()}
                 >
-                  Load more
+                  {t("loadMore")}
                 </Button>
               </li>
             )}

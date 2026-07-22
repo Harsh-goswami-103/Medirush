@@ -10,6 +10,7 @@ import {
   type QueryClient,
   type UseQueryResult,
 } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import type {
   CancelOrderResult,
   CreateRatingBody,
@@ -63,30 +64,12 @@ const PAYMENT_TONE = {
   COD_COLLECTED: "green",
 } as const satisfies Record<PaymentStatus, string>;
 
-/** Human headline for the hero card — the status badge alone reads like a DB enum. */
-const STATUS_HEADLINE: Record<OrderStatus, string> = {
-  PENDING_PAYMENT: "Payment pending",
-  PLACED: "Order placed",
-  RX_REVIEW: "Prescription in review",
-  PACKING: "Packing your order",
-  READY: "Ready for pickup",
-  ASSIGNED: "Rider assigned",
-  PICKED_UP: "On the way to you",
-  DELIVERED: "Delivered",
-  CANCELLED: "Order cancelled",
-};
-
-const STATUS_SUB: Record<OrderStatus, string> = {
-  PENDING_PAYMENT: "Complete the payment to get this order moving.",
-  PLACED: "Our pharmacy team has your order and will start packing shortly.",
-  RX_REVIEW: "A pharmacist is verifying your prescription.",
-  PACKING: "Your medicines are being picked and packed.",
-  READY: "Packed and waiting for a delivery partner.",
-  ASSIGNED: "A delivery partner is heading to the store.",
-  PICKED_UP: "Your order is out for delivery.",
-  DELIVERED: "Hope you're feeling better soon.",
-  CANCELLED: "This order was cancelled.",
-};
+/**
+ * Hero headline + sub-copy live in the `orderHeadline` / `orderSub` catalogs,
+ * keyed by the status enum itself — the status badge alone reads like a DB
+ * enum, and a new server status now fails typecheck instead of rendering
+ * `undefined`.
+ */
 
 /** Canonical happy path for the stepper; optional nodes are filtered per order. */
 const FULL_FLOW: OrderStatus[] = [
@@ -100,40 +83,25 @@ const FULL_FLOW: OrderStatus[] = [
   "DELIVERED",
 ];
 
-const STEP_LABEL: Record<OrderStatus, string> = {
-  PENDING_PAYMENT: "Payment",
-  PLACED: "Order placed",
-  RX_REVIEW: "Prescription review",
-  PACKING: "Packing",
-  READY: "Ready for pickup",
-  ASSIGNED: "Rider assigned",
-  PICKED_UP: "Out for delivery",
-  DELIVERED: "Delivered",
-  CANCELLED: "Cancelled",
+/** Reason options, in the order they are offered. Labels live in `returnReason`. */
+const RETURN_REASONS: ReturnReason[] = ["DAMAGED", "WRONG_ITEM", "MISSING", "EXPIRED", "OTHER"];
+
+/** Badge tint only — the label itself comes from the `returnStatus` catalog. */
+const RETURN_STATUS_TONE: Record<ReturnStatus, "amber" | "green" | "red"> = {
+  REQUESTED: "amber",
+  APPROVED: "green",
+  REJECTED: "red",
 };
-
-const RETURN_REASON_LABEL: Record<ReturnReason, string> = {
-  DAMAGED: "Item arrived damaged",
-  WRONG_ITEM: "Wrong item delivered",
-  MISSING: "Something is missing",
-  EXPIRED: "Item is expired or too close to expiry",
-  OTHER: "Something else",
-};
-
-const RETURN_STATUS_COPY: Record<ReturnStatus, { label: string; tone: "amber" | "green" | "red" }> =
-  {
-    REQUESTED: { label: "Under review", tone: "amber" },
-    APPROVED: { label: "Approved", tone: "green" },
-    REJECTED: { label: "Closed", tone: "red" },
-  };
-
-const STAR_WORD = ["", "Poor", "Fair", "Good", "Great", "Excellent"];
-
-const humanize = (s: string) => s.replace(/_/g, " ").toLowerCase();
 
 /** Order detail — GET /v1/orders/:id, with cancel / track / Rx-upload / invoice actions. */
 export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const t = useTranslations("orders");
+  const tCheckout = useTranslations("checkout");
+  const tHeadline = useTranslations("orderHeadline");
+  const tSub = useTranslations("orderSub");
+  const tPaymentStatus = useTranslations("paymentStatus");
+  const tActor = useTranslations("actorType");
   const router = useRouter();
   const qc = useQueryClient();
   const toast = useToast();
@@ -228,7 +196,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     },
     onSuccess: (paid) => {
       if (paid) {
-        toast.push({ type: "success", message: "Payment successful" });
+        toast.push({ type: "success", message: t("paymentSuccess") });
       } else {
         // Captured but the webhook hasn't landed yet — swap the retry card for
         // the confirming state (fast order polling above) instead of claiming
@@ -249,7 +217,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       }
       // PAYMENT_UNAVAILABLE (503) → friendly retry copy; server errors carry a
       // "Support code" (x-request-id). A dismissed sheet lands here too.
-      toast.push({ type: "error", message: apiErrorMessage(e, "Could not start the payment") });
+      toast.push({ type: "error", message: apiErrorMessage(e, t("paymentStartFailed")) });
     },
   });
 
@@ -260,10 +228,10 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     if (!confirmingPayment || !order || order.status === "PENDING_PAYMENT") return;
     setConfirmingPayment(false);
     if (order.paymentStatus === "PAID") {
-      toast.push({ type: "success", message: "Payment successful" });
+      toast.push({ type: "success", message: t("paymentSuccess") });
     }
     void qc.invalidateQueries({ queryKey: ["orders"] });
-  }, [confirmingPayment, order, toast, qc]);
+  }, [confirmingPayment, order, toast, qc, t]);
 
   const cancelMut = useMutation({
     mutationFn: () =>
@@ -272,9 +240,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       toast.push({
         type: "success",
         message:
-          res.data.outcome === "CANCELLED"
-            ? "Order cancelled"
-            : "Cancellation requested — our team will review it",
+          res.data.outcome === "CANCELLED" ? t("orderCancelledToast") : t("cancelRequested"),
       });
       setCancelOpen(false);
       setReason("");
@@ -282,7 +248,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       void qc.invalidateQueries({ queryKey: ["orders"] });
     },
     onError: (e) =>
-      toast.push({ type: "error", message: apiErrorMessage(e, "Could not cancel the order") }),
+      toast.push({ type: "error", message: apiErrorMessage(e, t("cancelFailed")) }),
   });
 
   const uploadMut = useMutation({
@@ -302,17 +268,17 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       if (!res.ok || !json) {
         throw new ApiError(
           "INTERNAL",
-          json?.error?.message ?? `Upload failed (${res.status})`,
+          json?.error?.message ?? t("uploadFailedStatus", { status: String(res.status) }),
           res.status,
         );
       }
       return json.data;
     },
     onSuccess: () => {
-      toast.push({ type: "success", message: "Prescription uploaded" });
+      toast.push({ type: "success", message: t("rxUploaded") });
       void qc.invalidateQueries({ queryKey: ["order", id] });
     },
-    onError: (e) => toast.push({ type: "error", message: apiErrorMessage(e, "Upload failed") }),
+    onError: (e) => toast.push({ type: "error", message: apiErrorMessage(e, t("uploadFailed")) }),
   });
 
   const invoiceMut = useMutation({
@@ -322,7 +288,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       window.open(res.data.url, "_blank", "noopener,noreferrer");
     },
     onError: (e) =>
-      toast.push({ type: "error", message: apiErrorMessage(e, "Could not fetch the invoice") }),
+      toast.push({ type: "error", message: apiErrorMessage(e, t("invoiceFailed")) }),
   });
 
   // Auth still resolving, or redirecting an anonymous visitor away.
@@ -337,17 +303,18 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const liveBadge = connected ? (
     <span className="flex items-center gap-1 text-xs font-medium text-success">
       <span className="h-2 w-2 rounded-full bg-success" />
-      Live
+      {t("live")}
     </span>
   ) : undefined;
 
+  const paymentExpiresAt = paymentQuery.data?.data.expiresAt ?? null;
   const cancellable = order ? CANCELLABLE.includes(order.status) : false;
   const trackable = order ? TRACKABLE.includes(order.status) : false;
   // The invoice number is null until the async invoice job runs post-delivery.
   const invoiceReady = delivered && order?.invoiceNo != null;
   const showActions = cancellable || trackable || invoiceReady;
   // null when NEXT_PUBLIC_SUPPORT_PHONE is unset — the CTA is hidden then.
-  const supportUrl = order ? whatsappUrl(`Hi, I need help with order ${order.orderNo}.`) : null;
+  const supportUrl = order ? whatsappUrl(t("supportMessage", { orderNo: order.orderNo })) : null;
   const showRxUpload =
     order != null &&
     order.requiresRx &&
@@ -363,7 +330,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 
   return (
     <div className="min-h-dvh bg-mesh">
-      <TopBar back title={order?.orderNo ?? "Order"} right={liveBadge} />
+      <TopBar back title={order?.orderNo ?? t("orderTitle")} right={liveBadge} />
 
       {orderQuery.isError ? (
         <div className="p-4">
@@ -389,21 +356,23 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   <RxBadge status={order.rxStatus} />
                   {order.patientName && (
                     <span className="inline-flex items-center gap-1 rounded-pill border border-rx/20 bg-rx/10 px-2 py-0.5 text-xs font-medium text-rx">
-                      For {order.patientName}
+                      {t("forPatient", { name: order.patientName })}
                     </span>
                   )}
                 </div>
                 <h2 className="mt-3 text-2xl font-bold leading-tight tracking-tight text-ink-900">
-                  {STATUS_HEADLINE[order.status]}
+                  {tHeadline(order.status)}
                 </h2>
-                <p className="mt-1 text-sm text-ink-600">{STATUS_SUB[order.status]}</p>
+                <p className="mt-1 text-sm text-ink-600">{tSub(order.status)}</p>
                 <p className="mt-3 text-xs text-ink-400">
-                  Placed {formatDateTime(order.createdAt)}
-                  {order.deliveredAt ? ` · Delivered ${formatDateTime(order.deliveredAt)}` : ""}
+                  {t("placedAt", { at: formatDateTime(order.createdAt) })}
+                  {order.deliveredAt
+                    ? ` · ${t("deliveredAt", { at: formatDateTime(order.deliveredAt) })}`
+                    : ""}
                 </p>
                 {order.status === "CANCELLED" && order.cancelReason && (
                   <p className="mt-2 rounded-input bg-danger/5 px-3 py-2 text-sm text-danger">
-                    Reason: {order.cancelReason}
+                    {t("cancelReasonLabel", { reason: order.cancelReason })}
                   </p>
                 )}
               </div>
@@ -419,27 +388,24 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 <Panel className="border-primary-600/30 bg-primary-50 p-5">
                   <p className="flex items-center gap-2 text-sm font-semibold text-primary-800">
                     <Spinner className="h-4 w-4" />
-                    Payment received — confirming…
+                    {t("paymentConfirming")}
                   </p>
-                  <p className="mt-1 text-sm text-ink-600">
-                    Your payment is being confirmed — this usually takes a few seconds. This page
-                    updates automatically.
-                  </p>
+                  <p className="mt-1 text-sm text-ink-600">{t("paymentConfirmingHint")}</p>
                 </Panel>
               ) : (
                 <Panel className="border-warning/30 bg-warning/5 p-5">
-                  <p className="text-sm font-semibold text-warning">Payment pending</p>
+                  <p className="text-sm font-semibold text-warning">{t("paymentPending")}</p>
                   <p className="mt-1 text-sm text-ink-600">
-                    This order is reserved but not paid yet.
-                    {paymentQuery.data?.data.expiresAt ? (
+                    {t("paymentPendingHint")}
+                    {paymentExpiresAt ? (
                       <>
                         {" "}
-                        It will be cancelled automatically in{" "}
-                        <Countdown until={paymentQuery.data.data.expiresAt} /> unless the payment is
-                        completed.
+                        {t.rich("autoCancelIn", {
+                          timer: () => <Countdown until={paymentExpiresAt} />,
+                        })}
                       </>
                     ) : (
-                      <> Complete the payment to get it moving.</>
+                      <> {t("completePaymentHint")}</>
                     )}
                   </p>
                   <Button
@@ -447,7 +413,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     loading={retryPayMut.isPending}
                     onClick={() => retryPayMut.mutate()}
                   >
-                    Complete payment · {formatPaise(order.totalPaise)}
+                    {t("completePayment", { amount: formatPaise(order.totalPaise) })}
                   </Button>
                 </Panel>
               ))}
@@ -469,18 +435,20 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             {order.refund && (
               <Panel className="border-info/30 bg-info/5 p-5">
                 <p className="text-sm font-semibold text-info">
-                  {order.paymentStatus === "REFUNDED" ? "Refund completed" : "Refund initiated"}
+                  {order.paymentStatus === "REFUNDED"
+                    ? t("refundCompleted")
+                    : t("refundInitiated")}
                 </p>
                 <p className="mt-1 text-sm text-ink-600">
-                  {formatPaise(order.refund.amountPaise)} is being returned to your original payment
-                  method
                   {order.paymentStatus === "REFUNDED"
-                    ? "."
-                    : " — banks typically take 5–7 working days."}
+                    ? t("refundBodyDone", { amount: formatPaise(order.refund.amountPaise) })
+                    : t("refundBodyPending", { amount: formatPaise(order.refund.amountPaise) })}
                 </p>
                 <p className="mt-1 text-xs text-ink-400">
-                  {order.refund.refundId ? `Ref: ${order.refund.refundId} · ` : ""}
-                  Updated {formatDateTime(order.refund.updatedAt)}
+                  {order.refund.refundId
+                    ? `${t("refundRef", { id: order.refund.refundId })} · `
+                    : ""}
+                  {t("refundUpdated", { at: formatDateTime(order.refund.updatedAt) })}
                 </p>
               </Panel>
             )}
@@ -489,20 +457,18 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             {order.deliveryOtp && (
               <Panel className="relative overflow-hidden border-primary-600/30 bg-gradient-to-br from-primary-50 to-mint p-5">
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-primary-800">
-                  Delivery OTP
+                  {t("deliveryOtp")}
                 </p>
                 <p className="mt-2 text-4xl font-bold tabular-nums tracking-[0.3em] text-primary-800">
                   {order.deliveryOtp}
                 </p>
-                <p className="mt-2 text-xs text-ink-600">
-                  Share this with your delivery partner to receive the order.
-                </p>
+                <p className="mt-2 text-xs text-ink-600">{t("deliveryOtpHint")}</p>
               </Panel>
             )}
 
             {/* Driver card */}
             {order.driver && (
-              <Section title="Delivery partner">
+              <Section title={t("deliveryPartner")}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-3">
                     <span
@@ -513,7 +479,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     </span>
                     <div className="min-w-0">
                       <p className="truncate text-sm font-semibold text-ink-900">
-                        {order.driver.name ?? "Assigned"}
+                        {order.driver.name ?? t("driverAssigned")}
                       </p>
                       <p className="truncate text-xs text-ink-600">
                         {order.driver.vehicleType}
@@ -523,10 +489,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   </div>
                   <a
                     href={`tel:${order.driver.phone}`}
-                    aria-label={`Call ${order.driver.name ?? "the delivery partner"}`}
+                    aria-label={t("callDriverAria", {
+                      name: order.driver.name ?? t("theDeliveryPartner"),
+                    })}
                     className="press inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-pill border border-primary-600/40 bg-primary-50 px-4 text-sm font-semibold text-primary-800"
                   >
-                    Call
+                    {t("call")}
                   </a>
                 </div>
               </Section>
@@ -534,12 +502,10 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 
             {/* Prescription */}
             {(order.requiresRx || order.prescriptions.length > 0) && (
-              <Section title="Prescription">
+              <Section title={t("prescription")}>
                 {showRxUpload && (
                   <>
-                    <p className="text-sm text-ink-600">
-                      This order needs a valid prescription. Upload a clear photo or PDF.
-                    </p>
+                    <p className="text-sm text-ink-600">{t("rxNeeded")}</p>
                     <div className="mt-3">
                       <Button
                         variant="secondary"
@@ -547,7 +513,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                         loading={uploadMut.isPending}
                         onClick={() => fileRef.current?.click()}
                       >
-                        Upload prescription
+                        {t("uploadRx")}
                       </Button>
                       <input
                         ref={fileRef}
@@ -579,7 +545,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             <Reveal as="section">
               <div className="mb-2 flex items-end justify-between gap-2 px-1">
                 <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-                  Progress
+                  {t("progress")}
                 </h2>
               </div>
               <Panel className="p-5">
@@ -587,14 +553,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 {order.events.length > 0 && (
                   <details className="mt-4 border-t border-line pt-3">
                     <summary className="cursor-pointer list-none text-xs font-semibold text-primary-700">
-                      Full history ({order.events.length})
+                      {t("fullHistory", { count: order.events.length })}
                     </summary>
                     <ul className="mt-3 space-y-2.5">
                       {order.events.map((ev: OrderEvent) => (
                         <li key={`${ev.to}-${ev.createdAt}`} className="text-xs">
                           <div className="flex flex-wrap items-center gap-2">
                             <OrderStatusBadge status={ev.to} />
-                            <span className="text-ink-400">{humanize(ev.actorType)}</span>
+                            <span className="text-ink-400">{tActor(ev.actorType)}</span>
                           </div>
                           {ev.note && <p className="mt-0.5 text-ink-600">{ev.note}</p>}
                           <p className="mt-0.5 text-ink-400">{formatDateTime(ev.createdAt)}</p>
@@ -610,7 +576,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             <Reveal as="section">
               <div className="mb-2 px-1">
                 <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-                  Items ({order.items.length})
+                  {tCheckout("items", { count: order.items.length })}
                 </h2>
               </div>
               <Panel className="p-4">
@@ -623,7 +589,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                       <div className="min-w-0">
                         <p className="text-sm font-medium text-ink-900">{it.nameSnap}</p>
                         <p className="mt-0.5 text-xs text-ink-400">
-                          {it.packSizeSnap} · Qty {it.qty} × {formatPaise(it.pricePaise)}
+                          {it.packSizeSnap} ·{" "}
+                          {t("qtyLine", {
+                            qty: String(it.qty),
+                            price: formatPaise(it.pricePaise),
+                          })}
                         </p>
                       </div>
                       <p className="shrink-0 text-sm font-semibold tabular-nums text-ink-900">
@@ -647,7 +617,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   })
                 }
               >
-                Order again
+                {t("orderAgain")}
               </Button>
             )}
 
@@ -655,7 +625,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             <Reveal as="section">
               <div className="mb-2 px-1">
                 <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-                  Delivery address
+                  {tCheckout("deliveryAddress")}
                 </h2>
               </div>
               <Panel className="p-4">
@@ -672,18 +642,22 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   {order.addressSnapshot.line2 ? `, ${order.addressSnapshot.line2}` : ""}
                 </p>
                 {order.addressSnapshot.landmark && (
-                  <p className="text-sm text-ink-600">Near {order.addressSnapshot.landmark}</p>
+                  <p className="text-sm text-ink-600">
+                    {t("nearLandmark", { landmark: order.addressSnapshot.landmark })}
+                  </p>
                 )}
                 <p className="text-sm text-ink-600">{order.addressSnapshot.pincode}</p>
                 {(order.deliveryNote || order.contactless) && (
                   <div className="mt-3 space-y-1.5 border-t border-line pt-3">
                     {order.contactless && (
                       <p className="inline-flex items-center gap-1.5 rounded-pill bg-primary-50 px-2.5 py-1 text-xs font-semibold text-primary-800">
-                        Contactless delivery
+                        {tCheckout("contactless")}
                       </p>
                     )}
                     {order.deliveryNote && (
-                      <p className="text-xs text-ink-600">Note: {order.deliveryNote}</p>
+                      <p className="text-xs text-ink-600">
+                        {t("deliveryNoteLabel", { note: order.deliveryNote })}
+                      </p>
                     )}
                   </div>
                 )}
@@ -694,36 +668,43 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
             <Reveal as="section">
               <div className="mb-2 px-1">
                 <h2 className="text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
-                  Bill details
+                  {tCheckout("billDetails")}
                 </h2>
               </div>
               <Panel className="p-4">
                 <dl className="space-y-1.5 text-sm">
-                  <BillRow label="Item total" value={formatPaise(order.itemsPaise)} />
-                  <BillRow label="Delivery fee" value={formatPaise(order.deliveryPaise)} />
+                  <BillRow label={t("itemTotal")} value={formatPaise(order.itemsPaise)} />
+                  <BillRow
+                    label={tCheckout("deliveryFee")}
+                    value={formatPaise(order.deliveryPaise)}
+                  />
                   {order.discountPaise > 0 && (
                     <BillRow
-                      label={order.couponCode ? `Discount (${order.couponCode})` : "Discount"}
+                      label={
+                        order.couponCode
+                          ? t("discountWithCode", { code: order.couponCode })
+                          : tCheckout("discount")
+                      }
                       value={`− ${formatPaise(order.discountPaise)}`}
                       tone="good"
                     />
                   )}
                   {order.tipPaise > 0 && (
-                    <BillRow label="Rider tip" value={formatPaise(order.tipPaise)} />
+                    <BillRow label={tCheckout("riderTip")} value={formatPaise(order.tipPaise)} />
                   )}
                   <div className="mt-2 flex items-center justify-between border-t border-line pt-2 text-base font-bold text-ink-900">
-                    <span>Total</span>
+                    <span>{t("total")}</span>
                     <span className="tabular-nums">{formatPaise(order.totalPaise)}</span>
                   </div>
                 </dl>
                 <div className="mt-3 flex items-center justify-between border-t border-line pt-3 text-sm">
-                  <span className="text-ink-600">Payment</span>
+                  <span className="text-ink-600">{t("payment")}</span>
                   <span className="flex items-center gap-2">
                     <span className="text-ink-900">
-                      {order.paymentMethod === "COD" ? "Cash on delivery" : "Prepaid"}
+                      {order.paymentMethod === "COD" ? tCheckout("cod") : t("prepaid")}
                     </span>
                     <Badge tone={PAYMENT_TONE[order.paymentStatus]}>
-                      {humanize(order.paymentStatus)}
+                      {tPaymentStatus(order.paymentStatus)}
                     </Badge>
                   </span>
                 </div>
@@ -740,7 +721,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 className="press inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-pill border border-success/30 bg-success/5 px-4 text-sm font-semibold text-success hover:bg-success/10"
               >
                 <WhatsAppIcon />
-                Need help with this order?
+                {t("needHelp")}
               </a>
             )}
           </div>
@@ -752,7 +733,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 {trackable && (
                   <Link href={`/orders/${id}/track`} className="flex-1">
                     <Button className="press w-full rounded-pill bg-gradient-to-r from-primary-700 to-primary-600 py-3 shadow-glow">
-                      Track order
+                      {t("trackOrder")}
                     </Button>
                   </Link>
                 )}
@@ -762,7 +743,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     loading={invoiceMut.isPending}
                     onClick={() => invoiceMut.mutate()}
                   >
-                    Download invoice
+                    {t("downloadInvoice")}
                   </Button>
                 )}
                 {cancellable && (
@@ -771,7 +752,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     className={cn("press rounded-pill py-3", trackable ? "" : "flex-1")}
                     onClick={() => setCancelOpen(true)}
                   >
-                    Cancel order
+                    {t("cancelOrder")}
                   </Button>
                 )}
               </div>
@@ -781,11 +762,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           <Modal
             open={cancelOpen}
             onClose={() => setCancelOpen(false)}
-            title="Cancel order"
+            title={t("cancelOrder")}
             footer={
               <>
                 <Button variant="ghost" onClick={() => setCancelOpen(false)}>
-                  Keep order
+                  {t("keepOrder")}
                 </Button>
                 <Button
                   variant="danger"
@@ -794,20 +775,18 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   disabled={reason.trim().length < 3}
                   onClick={() => cancelMut.mutate()}
                 >
-                  Cancel order
+                  {t("cancelOrder")}
                 </Button>
               </>
             }
           >
-            <p className="mb-3 text-sm text-ink-600">
-              Orders already being packed may need our team to approve the cancellation.
-            </p>
-            <Field label="Reason" hint="Minimum 3 characters.">
+            <p className="mb-3 text-sm text-ink-600">{t("cancelWarning")}</p>
+            <Field label={t("reasonLabel")} hint={t("minChars3")}>
               <Textarea
                 rows={3}
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
-                placeholder="Tell us why you're cancelling"
+                placeholder={t("cancelReasonPlaceholder")}
               />
             </Field>
           </Modal>
@@ -837,6 +816,8 @@ function RatingCard({
   query: RatingQuery;
   qc: QueryClient;
 }) {
+  const t = useTranslations("orders");
+  const tc = useTranslations("common");
   const toast = useToast();
   const existing = query.data?.data ?? null;
   const [editing, setEditing] = useState(false);
@@ -849,10 +830,10 @@ function RatingCard({
     onSuccess: (res) => {
       qc.setQueryData<Envelope<Rating | null>>(["order-rating", orderId], res);
       setEditing(false);
-      toast.push({ type: "success", message: "Thanks for the feedback" });
+      toast.push({ type: "success", message: t("ratingThanks") });
     },
     onError: (e) =>
-      toast.push({ type: "error", message: apiErrorMessage(e, "Could not save your rating") }),
+      toast.push({ type: "error", message: apiErrorMessage(e, t("ratingSaveFailed")) }),
   });
 
   if (query.isLoading) {
@@ -867,14 +848,14 @@ function RatingCard({
   if (query.isError) {
     return (
       <Panel className="p-5">
-        <p className="text-sm font-semibold text-ink-900">Rate this order</p>
-        <p className="mt-1 text-sm text-ink-600">We couldn&apos;t load your rating just now.</p>
+        <p className="text-sm font-semibold text-ink-900">{t("rateOrder")}</p>
+        <p className="mt-1 text-sm text-ink-600">{t("ratingLoadFailed")}</p>
         <Button
           variant="secondary"
           className="press mt-3 rounded-pill"
           onClick={() => void query.refetch()}
         >
-          Try again
+          {t("tryAgain")}
         </Button>
       </Panel>
     );
@@ -886,21 +867,23 @@ function RatingCard({
       <Panel className="border-primary-600/20 bg-gradient-to-br from-primary-50 to-mint p-5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-primary-800">Your rating</p>
+            <p className="text-sm font-semibold text-primary-800">{t("yourRating")}</p>
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <StarsReadOnly value={existing.orderStars} label="Order" />
-              <span className="text-xs text-ink-600">Order</span>
+              <StarsReadOnly value={existing.orderStars} label={t("labelOrder")} />
+              <span className="text-xs text-ink-600">{t("labelOrder")}</span>
             </div>
             {existing.driverStars != null && (
               <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                <StarsReadOnly value={existing.driverStars} label="Delivery partner" />
-                <span className="text-xs text-ink-600">Delivery partner</span>
+                <StarsReadOnly value={existing.driverStars} label={t("deliveryPartner")} />
+                <span className="text-xs text-ink-600">{t("deliveryPartner")}</span>
               </div>
             )}
             {existing.comment && (
               <p className="mt-2 text-sm italic text-ink-600">“{existing.comment}”</p>
             )}
-            <p className="mt-2 text-xs text-ink-400">Rated {formatDateTime(existing.createdAt)}</p>
+            <p className="mt-2 text-xs text-ink-400">
+              {t("ratedAt", { at: formatDateTime(existing.createdAt) })}
+            </p>
           </div>
           <button
             type="button"
@@ -912,7 +895,7 @@ function RatingCard({
               setEditing(true);
             }}
           >
-            Edit
+            {t("edit")}
           </button>
         </div>
       </Panel>
@@ -928,14 +911,12 @@ function RatingCard({
         aria-hidden
       />
       <div className="relative">
-        <p className="text-base font-bold tracking-tight text-ink-900">How did we do?</p>
-        <p className="mt-0.5 text-sm text-ink-600">
-          Your rating helps our pharmacists and riders improve.
-        </p>
+        <p className="text-base font-bold tracking-tight text-ink-900">{t("howDidWeDo")}</p>
+        <p className="mt-0.5 text-sm text-ink-600">{t("ratingHint")}</p>
 
         <StarPicker
           name={`order-stars-${orderId}`}
-          legend="Rate this order"
+          legend={t("rateOrder")}
           value={orderStars}
           onChange={setOrderStars}
         />
@@ -943,20 +924,20 @@ function RatingCard({
         {hasDriver && (
           <StarPicker
             name={`driver-stars-${orderId}`}
-            legend="Rate your delivery partner"
+            legend={t("rateDriver")}
             value={driverStars}
             onChange={setDriverStars}
           />
         )}
 
         <div className="mt-4">
-          <Field label="Anything to add? (optional)" hint="Up to 500 characters.">
+          <Field label={t("commentLabel")} hint={t("maxChars500")}>
             <Textarea
               rows={3}
               maxLength={500}
               value={comment}
               onChange={(e) => setComment(e.target.value)}
-              placeholder="What went well, or what could be better?"
+              placeholder={t("commentPlaceholder")}
             />
           </Field>
         </div>
@@ -974,7 +955,7 @@ function RatingCard({
               })
             }
           >
-            {existing ? "Update rating" : "Submit rating"}
+            {existing ? t("updateRating") : t("submitRating")}
           </Button>
           {existing && (
             <Button
@@ -982,7 +963,7 @@ function RatingCard({
               className="press rounded-pill"
               onClick={() => setEditing(false)}
             >
-              Cancel
+              {tc("cancel")}
             </Button>
           )}
         </div>
@@ -1004,6 +985,10 @@ function ReturnCard({
   query: ReturnsQuery;
   qc: QueryClient;
 }) {
+  const t = useTranslations("orders");
+  const tc = useTranslations("common");
+  const tReturnStatus = useTranslations("returnStatus");
+  const tReturnReason = useTranslations("returnReason");
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState<ReturnReason | "">("");
@@ -1019,17 +1004,17 @@ function ReturnCard({
       setReason("");
       setNote("");
       void qc.invalidateQueries({ queryKey: ["returns"] });
-      toast.push({ type: "success", message: "Reported — our pharmacist will get back to you" });
+      toast.push({ type: "success", message: t("issueReported") });
     },
     onError: (e) => {
       // 409 → a request for this order already exists; show it instead of an error.
       if (e instanceof ApiError && e.status === 409) {
         setOpen(false);
         void qc.invalidateQueries({ queryKey: ["returns"] });
-        toast.push({ type: "info", message: e.message || "You've already reported this order" });
+        toast.push({ type: "info", message: e.message || t("alreadyReported") });
         return;
       }
-      toast.push({ type: "error", message: apiErrorMessage(e, "Could not report the issue") });
+      toast.push({ type: "error", message: apiErrorMessage(e, t("reportFailed")) });
     },
   });
 
@@ -1043,24 +1028,27 @@ function ReturnCard({
   }
 
   if (existing) {
-    const copy = RETURN_STATUS_COPY[existing.status];
     return (
       <Panel className="p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-sm font-semibold text-ink-900">Issue reported</p>
-          <Badge tone={copy.tone}>{copy.label}</Badge>
+          <p className="text-sm font-semibold text-ink-900">{t("issueReportedTitle")}</p>
+          <Badge tone={RETURN_STATUS_TONE[existing.status]}>
+            {tReturnStatus(existing.status)}
+          </Badge>
         </div>
-        <p className="mt-2 text-sm text-ink-600">{RETURN_REASON_LABEL[existing.reason]}</p>
+        <p className="mt-2 text-sm text-ink-600">{tReturnReason(existing.reason)}</p>
         {existing.note && <p className="mt-1 text-sm italic text-ink-600">“{existing.note}”</p>}
         {existing.resolutionNote && (
           <p className="mt-3 rounded-input bg-surface-2 px-3 py-2 text-sm text-ink-600">
-            <span className="font-medium text-ink-900">Our response: </span>
+            <span className="font-medium text-ink-900">{t("ourResponse")}{" "}</span>
             {existing.resolutionNote}
           </p>
         )}
         <p className="mt-2 text-xs text-ink-400">
-          Reported {formatDateTime(existing.createdAt)}
-          {existing.resolvedAt ? ` · Resolved ${formatDateTime(existing.resolvedAt)}` : ""}
+          {t("reportedAt", { at: formatDateTime(existing.createdAt) })}
+          {existing.resolvedAt
+            ? ` · ${t("resolvedAt", { at: formatDateTime(existing.resolvedAt) })}`
+            : ""}
         </p>
       </Panel>
     );
@@ -1069,32 +1057,28 @@ function ReturnCard({
   return (
     <>
       <Panel className="p-5">
-        <p className="text-sm font-semibold text-ink-900">Something wrong with this order?</p>
-        <p className="mt-1 text-sm text-ink-600">
-          Damaged, missing or incorrect items — tell us and a pharmacist will pick it up.
-        </p>
+        <p className="text-sm font-semibold text-ink-900">{t("somethingWrong")}</p>
+        <p className="mt-1 text-sm text-ink-600">{t("somethingWrongHint")}</p>
         {query.isError && (
-          <p className="mt-2 text-xs text-ink-400">
-            We couldn&apos;t check for an existing report — sending a new one is still fine.
-          </p>
+          <p className="mt-2 text-xs text-ink-400">{t("returnsCheckFailed")}</p>
         )}
         <button
           type="button"
           className="press mt-4 inline-flex min-h-[44px] w-full items-center justify-center rounded-pill border border-line bg-surface px-4 text-sm font-semibold text-ink-900 hover:bg-surface-2"
           onClick={() => setOpen(true)}
         >
-          Report an issue
+          {t("reportIssue")}
         </button>
       </Panel>
 
       <Modal
         open={open}
         onClose={() => setOpen(false)}
-        title="Report an issue"
+        title={t("reportIssue")}
         footer={
           <>
             <Button variant="ghost" onClick={() => setOpen(false)}>
-              Close
+              {tc("close")}
             </Button>
             <Button
               className="press rounded-pill bg-gradient-to-r from-primary-700 to-primary-600 shadow-glow"
@@ -1105,15 +1089,15 @@ function ReturnCard({
                 mut.mutate({ reason, ...(note.trim() ? { note: note.trim() } : {}) });
               }}
             >
-              Submit report
+              {t("submitReport")}
             </Button>
           </>
         }
       >
         <fieldset>
-          <legend className="mb-2 text-sm font-medium text-ink-900">What went wrong?</legend>
+          <legend className="mb-2 text-sm font-medium text-ink-900">{t("whatWentWrong")}</legend>
           <div className="space-y-2">
-            {(Object.keys(RETURN_REASON_LABEL) as ReturnReason[]).map((r) => (
+            {RETURN_REASONS.map((r) => (
               <label
                 key={r}
                 className={cn(
@@ -1131,20 +1115,20 @@ function ReturnCard({
                   onChange={() => setReason(r)}
                   className="h-4 w-4 shrink-0 accent-primary-600"
                 />
-                {RETURN_REASON_LABEL[r]}
+                {tReturnReason(r)}
               </label>
             ))}
           </div>
         </fieldset>
 
         <div className="mt-4">
-          <Field label="Add a note (optional)" hint="Up to 500 characters.">
+          <Field label={t("noteLabel")} hint={t("maxChars500")}>
             <Textarea
               rows={3}
               maxLength={500}
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder="Which item, and what's wrong with it?"
+              placeholder={t("notePlaceholder")}
             />
           </Field>
         </div>
@@ -1173,10 +1157,11 @@ function StarGlyph({ filled, className }: { filled: boolean; className?: string 
 
 /** Read-only stars with a single accessible name (never five separate ones). */
 function StarsReadOnly({ value, label }: { value: number; label: string }) {
+  const t = useTranslations("orders");
   return (
     <span
       role="img"
-      aria-label={`${label}: ${value} out of 5 stars`}
+      aria-label={t("starsAria", { label, value: String(value) })}
       className="inline-flex items-center gap-0.5 text-accent"
     >
       {[1, 2, 3, 4, 5].map((n) => (
@@ -1202,6 +1187,7 @@ function StarPicker({
   value: number;
   onChange: (v: number) => void;
 }) {
+  const t = useTranslations("orders");
   return (
     <fieldset className="mt-4">
       <legend className="text-sm font-medium text-ink-900">{legend}</legend>
@@ -1216,7 +1202,7 @@ function StarPicker({
               onChange={() => onChange(n)}
               className="peer sr-only"
             />
-            <span className="sr-only">{`Rate ${n} out of 5`}</span>
+            <span className="sr-only">{t("rateNOutOf5", { n: String(n) })}</span>
             <span
               className={cn(
                 "flex h-11 w-11 items-center justify-center rounded-full transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-primary-600 peer-focus-visible:ring-offset-2",
@@ -1229,7 +1215,7 @@ function StarPicker({
         ))}
       </div>
       <p className="mt-0.5 min-h-[1rem] text-xs font-medium text-ink-600" aria-live="polite">
-        {value >= 1 ? `${value} out of 5 · ${STAR_WORD[value]}` : ""}
+        {value >= 1 ? t("starScore", { value }) : ""}
       </p>
     </fieldset>
   );
@@ -1240,7 +1226,8 @@ function StarPicker({
 type StepState = "done" | "current" | "upcoming";
 interface Step {
   key: string;
-  label: string;
+  /** Status enum, not display copy — the `orderStep` catalog owns the label. */
+  label: OrderStatus;
   at: string | null;
   state: StepState;
   terminal?: boolean;
@@ -1279,7 +1266,7 @@ function buildSteps(order: OrderDetail): Step[] {
 
   const steps: Step[] = flow.map((s, i) => ({
     key: s,
-    label: STEP_LABEL[s],
+    label: s,
     at: reachedAt.get(s) ?? fallback[s] ?? null,
     state: cancelled
       ? i <= lastReached
@@ -1295,7 +1282,7 @@ function buildSteps(order: OrderDetail): Step[] {
   if (cancelled) {
     steps.push({
       key: "CANCELLED",
-      label: STEP_LABEL.CANCELLED,
+      label: "CANCELLED",
       at: order.cancelledAt ?? reachedAt.get("CANCELLED") ?? null,
       state: "current",
       terminal: true,
@@ -1305,6 +1292,8 @@ function buildSteps(order: OrderDetail): Step[] {
 }
 
 function Stepper({ order }: { order: OrderDetail }) {
+  const t = useTranslations("orders");
+  const tStep = useTranslations("orderStep");
   const steps = buildSteps(order);
   return (
     <ol>
@@ -1338,13 +1327,13 @@ function Stepper({ order }: { order: OrderDetail }) {
                       : "font-medium text-ink-900",
                 )}
               >
-                {step.label}
+                {tStep(step.label)}
               </p>
               {step.at && <p className="-mt-2 text-xs text-ink-400">{formatDateTime(step.at)}</p>}
               {step.state === "current" && !step.terminal && (
                 <p className="mt-1 inline-flex items-center gap-1.5 rounded-pill bg-primary-50 px-2.5 py-0.5 text-xs font-semibold text-primary-800">
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-600" aria-hidden />
-                  In progress
+                  {t("inProgress")}
                 </p>
               )}
             </div>

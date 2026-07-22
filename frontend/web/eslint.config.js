@@ -9,6 +9,13 @@ export default [
     rules: { "no-console": "off" },
   },
   {
+    // Build-time scripts run under Node, not in the browser.
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: { console: "readonly", process: "readonly" },
+    },
+  },
+  {
     // Hand-rolled service worker: ServiceWorkerGlobalScope globals, not a module.
     files: ["public/sw.js"],
     languageOptions: {

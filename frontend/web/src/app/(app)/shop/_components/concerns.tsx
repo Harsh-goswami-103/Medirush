@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import type { HealthConcern } from "@medrush/contracts";
 import { api } from "@/lib/api";
 import { Skeleton } from "@/components/ui";
@@ -36,11 +37,12 @@ export function ConcernRail({
   onSelect: (slug: string | undefined) => void;
 }) {
   const concernsQuery = useConcerns();
+  const t = useTranslations("shop");
 
   if (concernsQuery.isLoading) {
     return (
       <section className="pb-4">
-        <SectionHeader title="Shop by health concern" />
+        <SectionHeader title={t("shopByConcern")} />
         <div className="no-scrollbar flex gap-3 overflow-x-auto px-4">
           {[0, 1, 2, 3, 4].map((i) => (
             <div key={i} className="w-[68px] shrink-0">
@@ -59,8 +61,8 @@ export function ConcernRail({
   return (
     <Reveal as="section" className="pb-4">
       <SectionHeader
-        title="Shop by health concern"
-        hint="Curated picks for what you're treating"
+        title={t("shopByConcern")}
+        hint={t("shopByConcernHint")}
         action={
           activeSlug ? (
             <button
@@ -68,7 +70,7 @@ export function ConcernRail({
               onClick={() => onSelect(undefined)}
               className="press rounded-pill px-2 py-1 text-xs font-semibold text-primary-700"
             >
-              Clear
+              {t("clear")}
             </button>
           ) : undefined
         }

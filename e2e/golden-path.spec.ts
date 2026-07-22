@@ -82,7 +82,13 @@ test("customer places a COD order for a non-Rx product (golden path)", async ({
   await expect(title).toBeVisible();
   orderNo = ((await title.textContent()) ?? "").trim();
   expect(orderNo).toMatch(ORDER_NO_RE);
-  await expect(page.getByText("PLACED", { exact: true }).first()).toBeVisible();
+  // Select on the enum, not the label: the badge copy is translated (en/hi),
+  // so display text is no longer a stable hook. The ops-board assertion below
+  // is a different app and still matches its own raw text.
+  await expect(page.getByTestId("order-status").first()).toHaveAttribute(
+    "data-value",
+    "PLACED",
+  );
   await expect(page.getByText("Cash on delivery")).toBeVisible();
 });
 
