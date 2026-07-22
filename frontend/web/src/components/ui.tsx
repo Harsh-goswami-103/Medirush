@@ -1,4 +1,7 @@
+"use client";
+
 import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { useTranslations } from "next-intl";
 import type { OrderStatus, RxStatus } from "@medrush/contracts";
 import { cn } from "@/lib/cn";
 
@@ -76,13 +79,27 @@ const BADGE_TONES: Record<BadgeTone, string> = {
   blue: "bg-info/10 text-info border-info/20",
 };
 
-export function Badge({ tone = "neutral", children }: { tone?: BadgeTone; children: ReactNode }) {
+export function Badge({
+  tone = "neutral",
+  children,
+  testId,
+  value,
+}: {
+  tone?: BadgeTone;
+  children: ReactNode;
+  /** Stable hook for e2e, so tests never select on translated display copy. */
+  testId?: string;
+  /** The underlying enum value, exposed for the same reason. */
+  value?: string;
+}) {
   return (
     <span
       className={cn(
         "inline-flex items-center rounded-pill border px-2 py-0.5 text-xs font-medium",
         BADGE_TONES[tone],
       )}
+      data-testid={testId}
+      data-value={value}
     >
       {children}
     </span>
@@ -101,8 +118,19 @@ const ORDER_STATUS_TONE: Record<OrderStatus, BadgeTone> = {
   CANCELLED: "red",
 };
 
+/**
+ * The label comes from the catalog, not from the enum name — `PICKED_UP` read
+ * as "PICKED UP" to English users and was untranslatable for Hindi ones. The
+ * `orderStatus` namespace is keyed by the enum value so a new server status
+ * fails typecheck here rather than rendering a raw identifier.
+ */
 export function OrderStatusBadge({ status }: { status: OrderStatus }) {
-  return <Badge tone={ORDER_STATUS_TONE[status]}>{status.replace(/_/g, " ")}</Badge>;
+  const t = useTranslations("orderStatus");
+  return (
+    <Badge tone={ORDER_STATUS_TONE[status]} testId="order-status" value={status}>
+      {t(status)}
+    </Badge>
+  );
 }
 
 const RX_TONE: Record<RxStatus, BadgeTone> = {
@@ -113,8 +141,10 @@ const RX_TONE: Record<RxStatus, BadgeTone> = {
 };
 
 export function RxBadge({ status }: { status: RxStatus }) {
+  const t = useTranslations("rxStatus");
+  // Hook first: `NA` renders nothing, but the hook order must not depend on it.
   if (status === "NA") return null;
-  return <Badge tone={RX_TONE[status]}>Rx {status.toLowerCase()}</Badge>;
+  return <Badge tone={RX_TONE[status]}>{t(status)}</Badge>;
 }
 
 /* ------------------------------------------------------------------ Skeleton */

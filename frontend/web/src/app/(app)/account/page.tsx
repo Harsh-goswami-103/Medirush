@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Address, CreateAddressBody, UpdateMeBody, User } from "@medrush/contracts";
 import { api, ApiError, apiErrorMessage } from "@/lib/api";
@@ -15,6 +16,7 @@ import { NotificationBell } from "@/components/AppShell";
 import { Badge, Button, EmptyState, ErrorState, Skeleton, Spinner, WhatsAppIcon } from "@/components/ui";
 import { Reveal } from "@/components/motion";
 import { Field, TextInput } from "@/components/kit";
+import { LanguageToggle } from "@/components/LanguageToggle";
 import { Modal } from "@/components/modal";
 
 /* -------------------------------------------------------------- glyphs */
@@ -154,6 +156,8 @@ export default function AccountPage() {
   const { store } = useStore();
   const qc = useQueryClient();
   const toast = useToast();
+  const t = useTranslations("account");
+  const tc = useTranslations("common");
 
   const [profileOpen, setProfileOpen] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
@@ -171,10 +175,10 @@ export default function AccountPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["addresses"] });
       setDeleting(null);
-      toast.push({ type: "success", message: "Address deleted" });
+      toast.push({ type: "success", message: t("addressDeleted") });
     },
     onError: (err) =>
-      toast.push({ type: "error", message: apiErrorMessage(err, "Could not delete address") }),
+      toast.push({ type: "error", message: apiErrorMessage(err, t("addressDeleteFailed")) }),
   });
 
   // UpdateAddressBody already accepts `isDefault`; the server clears the
@@ -184,12 +188,12 @@ export default function AccountPage() {
       api.patch<Address>(`/v1/addresses/${addrId}`, { isDefault: true }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["addresses"] });
-      toast.push({ type: "success", message: "Default address updated" });
+      toast.push({ type: "success", message: t("defaultAddressUpdated") });
     },
     onError: (err) =>
       toast.push({
         type: "error",
-        message: apiErrorMessage(err, "Could not set the default address"),
+        message: apiErrorMessage(err, t("defaultAddressSetFailed")),
       }),
   });
 
@@ -207,22 +211,22 @@ export default function AccountPage() {
         <header className="relative overflow-hidden rounded-b-sheet2 bg-mesh-hero bg-mesh-animated px-4 pb-10 pt-4">
           <div className="absolute inset-0 bg-primary-900/60" aria-hidden />
           <div className="relative">
-            <h1 className="text-lg font-semibold text-white">Account</h1>
+            <h1 className="text-lg font-semibold text-white">{t("title")}</h1>
             <p className="mt-2 text-sm text-white/90">
-              Sign in to manage your profile, prescriptions and orders.
+              {t("signedOutHint")}
             </p>
           </div>
         </header>
         <div className="p-4">
           <EmptyState
-            title="You’re not signed in"
-            hint="Your addresses, prescriptions and order history live here."
+            title={t("notSignedIn")}
+            hint={t("notSignedInHint")}
             action={
               <Link
                 href="/login"
                 className="press inline-flex min-h-11 w-full items-center justify-center rounded-xl2 bg-gradient-to-br from-primary-500 to-primary-700 px-4 text-sm font-semibold text-white shadow-glow"
               >
-                Sign in
+                {tc("signIn")}
               </Link>
             }
           />
@@ -233,8 +237,8 @@ export default function AccountPage() {
 
   const addresses = addrQuery.data?.data ?? [];
   // null when NEXT_PUBLIC_SUPPORT_PHONE is unset — the CTA is hidden then.
-  const supportUrl = whatsappUrl("Hi, I need help with my MedRush order.");
-  const displayName = user.name?.trim() || "Add your name";
+  const supportUrl = whatsappUrl(t("supportWhatsappMessage"));
+  const displayName = user.name?.trim() || t("addYourName");
   const initial = (user.name?.trim()?.[0] ?? user.phone.replace(/\D/g, "").slice(-1) ?? "M").toUpperCase();
 
   return (
@@ -244,7 +248,7 @@ export default function AccountPage() {
         <div className="absolute inset-0 bg-primary-900/60" aria-hidden />
         <div className="relative">
           <div className="flex items-center justify-between gap-2">
-            <h1 className="text-lg font-semibold text-white">Account</h1>
+            <h1 className="text-lg font-semibold text-white">{t("title")}</h1>
             <NotificationBell tone="invert" />
           </div>
 
@@ -268,7 +272,7 @@ export default function AccountPage() {
             className="glass-dark press mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl2 text-sm font-semibold text-white"
           >
             <Glyph paths={ICONS.pencil} className="h-4 w-4" />
-            Edit profile
+            {t("editProfile")}
           </button>
         </div>
       </header>
@@ -277,29 +281,29 @@ export default function AccountPage() {
         {/* ------------------------------------------------- quick tiles */}
         <Reveal>
           <div className="grid grid-cols-2 gap-3">
-            <QuickTile href="/wishlist" paths={ICONS.heart} label="Wishlist" hint="Saved items" />
-            <QuickTile href="/refills" paths={ICONS.clock} label="Refills" hint="Reminders" />
-            <QuickTile href="/offers" paths={ICONS.tag} label="Offers" hint="Coupons & deals" tone="amber" />
-            <QuickTile href="/referrals" paths={ICONS.gift} label="Refer & earn" hint="Invite friends" />
+            <QuickTile href="/wishlist" paths={ICONS.heart} label={t("wishlist")} hint={t("wishlistHint")} />
+            <QuickTile href="/refills" paths={ICONS.clock} label={t("refillsShort")} hint={t("refillsHint")} />
+            <QuickTile href="/offers" paths={ICONS.tag} label={t("offers")} hint={t("offersHint")} tone="amber" />
+            <QuickTile href="/referrals" paths={ICONS.gift} label={t("referrals")} hint={t("referralsHint")} />
           </div>
         </Reveal>
 
         {/* ------------------------------------------------- health group */}
         <Reveal delayMs={60}>
           <section>
-            <GroupLabel>Your health</GroupLabel>
+            <GroupLabel>{t("yourHealth")}</GroupLabel>
             <Panel className="divide-y divide-line">
               <NavRow
                 href="/profiles"
                 paths={ICONS.users}
-                label="Patient profiles"
-                hint="Order for family and dependants"
+                label={t("profiles")}
+                hint={t("profilesHint")}
               />
               <NavRow
                 href="/prescriptions"
                 paths={ICONS.file}
-                label="My prescriptions"
-                hint="Upload once, reuse on every refill"
+                label={t("prescriptions")}
+                hint={t("prescriptionsHint")}
               />
             </Panel>
           </section>
@@ -309,7 +313,7 @@ export default function AccountPage() {
         <Reveal delayMs={120}>
           <section>
             <div className="mb-2 flex items-end justify-between gap-2 px-1">
-              <GroupLabel>Saved addresses</GroupLabel>
+              <GroupLabel>{t("savedAddresses")}</GroupLabel>
               <button
                 type="button"
                 onClick={() => {
@@ -318,7 +322,7 @@ export default function AccountPage() {
                 }}
                 className="press -mt-2 min-h-11 rounded-pill px-2 text-xs font-semibold text-primary-700"
               >
-                + Add new
+                {t("addNew")}
               </button>
             </div>
 
@@ -341,8 +345,8 @@ export default function AccountPage() {
               ) : addresses.length === 0 ? (
                 <EmptyState
                   icon={<Glyph paths={ICONS.pin} className="h-7 w-7" />}
-                  title="No saved addresses"
-                  hint="Add one to speed up checkout."
+                  title={t("noAddresses")}
+                  hint={t("noAddressesHint")}
                   action={
                     <Button
                       className="w-full"
@@ -351,7 +355,7 @@ export default function AccountPage() {
                         setFormOpen(true);
                       }}
                     >
-                      Add an address
+                      {t("addAnAddress")}
                     </Button>
                   }
                 />
@@ -362,15 +366,19 @@ export default function AccountPage() {
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="flex flex-wrap items-center gap-2 text-sm font-semibold text-ink-900">
-                            {a.label || "Address"}
-                            {a.isDefault && <Badge tone="teal">Default</Badge>}
+                            {a.label || t("addressFallbackLabel")}
+                            {a.isDefault && <Badge tone="teal">{t("default")}</Badge>}
                           </p>
                           <p className="mt-0.5 text-sm text-ink-600">
                             {a.line1}
                             {a.line2 ? `, ${a.line2}` : ""}
                           </p>
-                          {a.landmark && <p className="text-xs text-ink-400">Near {a.landmark}</p>}
-                          <p className="text-xs text-ink-400">PIN {a.pincode}</p>
+                          {a.landmark && (
+                            <p className="text-xs text-ink-400">
+                              {t("nearLandmark", { landmark: a.landmark })}
+                            </p>
+                          )}
+                          <p className="text-xs text-ink-400">{t("pinCode", { pincode: a.pincode })}</p>
                         </div>
                         <span className="flex shrink-0 flex-col items-end">
                           <button
@@ -381,14 +389,14 @@ export default function AccountPage() {
                               setFormOpen(true);
                             }}
                           >
-                            Edit
+                            {t("edit")}
                           </button>
                           <button
                             type="button"
                             className="press min-h-11 px-2 text-xs font-semibold text-danger"
                             onClick={() => setDeleting(a)}
                           >
-                            Delete
+                            {t("delete")}
                           </button>
                         </span>
                       </div>
@@ -400,8 +408,8 @@ export default function AccountPage() {
                           onClick={() => setDefaultAddr.mutate(a.id)}
                         >
                           {setDefaultAddr.isPending && setDefaultAddr.variables === a.id
-                            ? "Setting…"
-                            : "Set as default"}
+                            ? t("settingDefault")
+                            : t("setAsDefault")}
                         </button>
                       )}
                     </div>
@@ -415,14 +423,15 @@ export default function AccountPage() {
         {/* ------------------------------------------------- preferences */}
         <Reveal delayMs={160}>
           <section>
-            <GroupLabel>Preferences</GroupLabel>
+            <GroupLabel>{t("preferences")}</GroupLabel>
             <Panel className="divide-y divide-line">
               <NavRow
                 href="/settings/notifications"
                 paths={ICONS.bell}
-                label="Notification settings"
-                hint="Order updates, offers, refill nudges"
+                label={t("notificationSettings")}
+                hint={t("notificationSettingsHint")}
               />
+              <LanguageToggle />
             </Panel>
           </section>
         </Reveal>
@@ -430,11 +439,11 @@ export default function AccountPage() {
         {/* --------------------------------------------------- help/legal */}
         <Reveal delayMs={200}>
           <section>
-            <GroupLabel>Help & legal</GroupLabel>
+            <GroupLabel>{t("helpLegal")}</GroupLabel>
             <Panel className="divide-y divide-line">
-              <NavRow href="/legal" paths={ICONS.shield} label="Licensing & compliance" />
-              <NavRow href="/privacy" paths={ICONS.shield} label="Privacy policy" />
-              <NavRow href="/terms" paths={ICONS.shield} label="Terms & conditions" />
+              <NavRow href="/legal" paths={ICONS.shield} label={t("licensingCompliance")} />
+              <NavRow href="/privacy" paths={ICONS.shield} label={t("privacyPolicy")} />
+              <NavRow href="/terms" paths={ICONS.shield} label={t("termsConditions")} />
             </Panel>
           </section>
         </Reveal>
@@ -450,7 +459,7 @@ export default function AccountPage() {
                 className="press inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl2 border border-success/30 bg-success/5 px-3.5 text-sm font-semibold text-success"
               >
                 <WhatsAppIcon />
-                WhatsApp
+                {t("whatsapp")}
               </a>
             )}
             {store?.supportPhone && (
@@ -459,7 +468,7 @@ export default function AccountPage() {
                 className="press inline-flex min-h-11 flex-1 items-center justify-center gap-2 rounded-xl2 border border-primary-600/30 bg-primary-50 px-3.5 text-sm font-semibold text-primary-700"
               >
                 <Glyph paths={ICONS.phone} className="h-4 w-4" />
-                Call us
+                {t("callUs")}
               </a>
             )}
           </div>
@@ -475,17 +484,20 @@ export default function AccountPage() {
           className="press inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl2 bg-surface px-4 text-sm font-semibold text-danger shadow-card2"
         >
           <Glyph paths={ICONS.logout} className="h-4 w-4" />
-          Sign out
+          {tc("signOut")}
         </button>
 
         {/* -------------------------------------------- regulatory (§10.2) */}
         <footer className="px-1 pt-1 text-center text-[11px] leading-5 text-ink-400">
-          <p>Drug License: {store?.drugLicenseNo ?? "—"}</p>
+          <p>{t("drugLicense", { value: store?.drugLicenseNo ?? "—" })}</p>
           <p>
-            Pharmacist: {store?.pharmacistName ?? "—"} (Reg. {store?.pharmacistRegNo ?? "—"})
+            {t("pharmacistLine", {
+              name: store?.pharmacistName ?? "—",
+              regNo: store?.pharmacistRegNo ?? "—",
+            })}
           </p>
-          <p>GSTIN: {store?.gstin ?? "—"}</p>
-          <p>FSSAI: {store?.fssaiNo ?? "—"}</p>
+          <p>{t("gstin", { value: store?.gstin ?? "—" })}</p>
+          <p>{t("fssai", { value: store?.fssaiNo ?? "—" })}</p>
         </footer>
       </div>
 
@@ -495,25 +507,27 @@ export default function AccountPage() {
       <Modal
         open={deleting !== null}
         onClose={() => setDeleting(null)}
-        title="Delete address"
+        title={t("deleteAddress")}
         footer={
           <>
             <Button variant="ghost" onClick={() => setDeleting(null)}>
-              Keep
+              {t("keep")}
             </Button>
             <Button
               variant="danger"
               loading={deleteAddr.isPending}
               onClick={() => deleting && deleteAddr.mutate(deleting.id)}
             >
-              Delete
+              {t("delete")}
             </Button>
           </>
         }
       >
         <p className="text-sm text-ink-600">
-          Delete <span className="font-medium text-ink-900">{deleting?.label || "this address"}</span>
-          ? Orders already placed keep the address they were delivered to.
+          {t.rich("deleteAddressBody", {
+            name: deleting?.label || t("thisAddress"),
+            strong: (chunks) => <span className="font-medium text-ink-900">{chunks}</span>,
+          })}
         </p>
       </Modal>
     </div>
@@ -525,6 +539,8 @@ export default function AccountPage() {
 function ProfileModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { user, refreshUser } = useAuth();
   const toast = useToast();
+  const t = useTranslations("account");
+  const tc = useTranslations("common");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
 
@@ -548,11 +564,11 @@ function ProfileModal({ open, onClose }: { open: boolean; onClose: () => void })
       setName(res.data.name ?? "");
       setEmail(res.data.email ?? "");
       void refreshUser();
-      toast.push({ type: "success", message: "Profile saved" });
+      toast.push({ type: "success", message: t("profileSaved") });
       onClose();
     },
     onError: (err) =>
-      toast.push({ type: "error", message: apiErrorMessage(err, "Could not save profile") }),
+      toast.push({ type: "error", message: apiErrorMessage(err, t("profileSaveFailed")) }),
   });
 
   const dirty = name.trim() !== (user?.name ?? "") || email.trim() !== (user?.email ?? "");
@@ -561,27 +577,31 @@ function ProfileModal({ open, onClose }: { open: boolean; onClose: () => void })
     <Modal
       open={open}
       onClose={onClose}
-      title="Edit profile"
+      title={t("editProfile")}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
-            Cancel
+            {tc("cancel")}
           </Button>
           <Button
             onClick={() => saveProfile.mutate()}
             disabled={!dirty || name.trim() === ""}
             loading={saveProfile.isPending}
           >
-            Save changes
+            {t("saveChanges")}
           </Button>
         </>
       }
     >
       <div className="space-y-3">
-        <Field label="Name" error={name.trim() === "" ? "Name can’t be empty" : undefined}>
-          <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" />
+        <Field label={t("name")} error={name.trim() === "" ? t("nameRequired") : undefined}>
+          <TextInput
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={t("namePlaceholder")}
+          />
         </Field>
-        <Field label="Email" hint="Used for order receipts and invoices.">
+        <Field label={t("email")} hint={t("emailHint")}>
           <TextInput
             type="email"
             value={email}
@@ -589,7 +609,7 @@ function ProfileModal({ open, onClose }: { open: boolean; onClose: () => void })
             placeholder="you@example.com"
           />
         </Field>
-        <Field label="Phone" hint="Linked to your sign-in; contact support to change it.">
+        <Field label={t("phone")} hint={t("phoneHint")}>
           <TextInput value={user?.phone ?? ""} disabled readOnly />
         </Field>
       </div>
@@ -610,6 +630,8 @@ function AddressFormModal({
 }) {
   const qc = useQueryClient();
   const toast = useToast();
+  const t = useTranslations("account");
+  const tc = useTranslations("common");
 
   const [label, setLabel] = useState("");
   const [line1, setLine1] = useState("");
@@ -647,13 +669,16 @@ function AddressFormModal({
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["addresses"] });
-      toast.push({ type: "success", message: initial ? "Address updated" : "Address added" });
+      toast.push({
+        type: "success",
+        message: initial ? t("addressUpdated") : t("addressAdded"),
+      });
       onClose();
     },
     onError: (err) =>
       toast.push({
         type: "error",
-        message: err instanceof ApiError ? err.message : "Could not save address",
+        message: err instanceof ApiError ? err.message : t("addressSaveFailed"),
       }),
   });
 
@@ -668,46 +693,50 @@ function AddressFormModal({
     <Modal
       open={open}
       onClose={onClose}
-      title={initial ? "Edit address" : "Add address"}
+      title={initial ? t("editAddress") : t("addAddress")}
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
-            Cancel
+            {tc("cancel")}
           </Button>
           <Button onClick={() => save.mutate()} disabled={!valid} loading={save.isPending}>
-            {initial ? "Save" : "Add"}
+            {initial ? tc("save") : t("add")}
           </Button>
         </>
       }
     >
       <div className="space-y-3">
-        <Field label="Label" hint="e.g. Home, Work">
-          <TextInput value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Home" />
+        <Field label={t("addressLabel")} hint={t("addressLabelHint")}>
+          <TextInput
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder={t("addressLabelPlaceholder")}
+          />
         </Field>
-        <Field label="Address line 1">
+        <Field label={t("addressLine1")}>
           <TextInput
             value={line1}
             onChange={(e) => setLine1(e.target.value)}
-            placeholder="Flat / house no, building, street"
+            placeholder={t("addressLine1Placeholder")}
           />
         </Field>
-        <Field label="Address line 2">
+        <Field label={t("addressLine2")}>
           <TextInput
             value={line2}
             onChange={(e) => setLine2(e.target.value)}
-            placeholder="Area, locality (optional)"
+            placeholder={t("addressLine2Placeholder")}
           />
         </Field>
-        <Field label="Landmark">
+        <Field label={t("landmark")}>
           <TextInput
             value={landmark}
             onChange={(e) => setLandmark(e.target.value)}
-            placeholder="Nearby landmark (optional)"
+            placeholder={t("landmarkPlaceholder")}
           />
         </Field>
         <Field
-          label="PIN code"
-          error={pincode.trim() !== "" && !pinOk ? "Enter a valid 6-digit PIN" : undefined}
+          label={t("pincodeLabel")}
+          error={pincode.trim() !== "" && !pinOk ? t("pincodeInvalid") : undefined}
         >
           <TextInput
             value={pincode}
@@ -718,7 +747,7 @@ function AddressFormModal({
           />
         </Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Latitude">
+          <Field label={t("latitude")}>
             <TextInput
               value={lat}
               onChange={(e) => setLat(e.target.value)}
@@ -726,7 +755,7 @@ function AddressFormModal({
               placeholder="12.97160"
             />
           </Field>
-          <Field label="Longitude">
+          <Field label={t("longitude")}>
             <TextInput
               value={lng}
               onChange={(e) => setLng(e.target.value)}
@@ -735,9 +764,7 @@ function AddressFormModal({
             />
           </Field>
         </div>
-        <p className="text-xs text-ink-400">
-          Drop a pin at your door for accurate delivery. Coordinates come from the map in production.
-        </p>
+        <p className="text-xs text-ink-400">{t("coordinatesHint")}</p>
       </div>
     </Modal>
   );

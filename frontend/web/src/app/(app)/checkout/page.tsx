@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import type {
   Address,
   AttachRxBody,
@@ -89,13 +90,14 @@ const EMPTY_PATIENT: { name: string; relation: PatientRelation; dob: string; gen
   gender: "",
 };
 
-const RELATION_LABEL: Record<PatientRelation, string> = {
-  SELF: "Self",
-  SPOUSE: "Spouse",
-  CHILD: "Child",
-  PARENT: "Parent",
-  OTHER: "Other",
-};
+/** Relation → message key. Order is the order the <Select> lists them in. */
+const RELATION_KEY = {
+  SELF: "relationSelf",
+  SPOUSE: "relationSpouse",
+  CHILD: "relationChild",
+  PARENT: "relationParent",
+  OTHER: "relationOther",
+} as const satisfies Record<PatientRelation, string>;
 
 const TIP_PRESETS_PAISE = [1000, 2000, 3000];
 const MAX_TIP_RUPEES = MAX_TIP_PAISE / 100;
@@ -105,6 +107,8 @@ const CTA =
   "press bg-gradient-to-r from-primary-600 to-primary-500 shadow-glow hover:from-primary-700 hover:to-primary-600 disabled:bg-none disabled:shadow-none";
 
 export default function CheckoutPage() {
+  const t = useTranslations("checkout");
+  const tCommon = useTranslations("common");
   const router = useRouter();
   const qc = useQueryClient();
   const toast = useToast();
@@ -286,7 +290,7 @@ export default function CheckoutPage() {
     },
     onError: (err) => {
       setQuote(null);
-      setCouponError(err instanceof ApiError ? err.message : "Could not check that code");
+      setCouponError(err instanceof ApiError ? err.message : t("couponCheckFailed"));
     },
   });
 
@@ -295,9 +299,9 @@ export default function CheckoutPage() {
   useEffect(() => {
     if (quote && totals && quote.itemsPaise !== totals.itemsPaise) {
       setQuote(null);
-      setCouponError("Cart changed — re-apply your coupon");
+      setCouponError(t("cartChanged"));
     }
-  }, [quote, totals]);
+  }, [quote, totals, t]);
 
   function clearCoupon() {
     setCoupon("");
@@ -312,10 +316,10 @@ export default function CheckoutPage() {
       setSelectedAddressId(res.data.id);
       setShowAddrForm(false);
       setForm(EMPTY_FORM);
-      toast.push({ type: "success", message: "Address added" });
+      toast.push({ type: "success", message: t("addressAdded") });
     },
     onError: (err) =>
-      toast.push({ type: "error", message: apiErrorMessage(err, "Could not save address") }),
+      toast.push({ type: "error", message: apiErrorMessage(err, t("addressSaveFailed")) }),
   });
 
   const createPatient = useMutation({
@@ -325,16 +329,16 @@ export default function CheckoutPage() {
       setPatientId(res.data.id);
       setShowPatientForm(false);
       setPatientForm(EMPTY_PATIENT);
-      toast.push({ type: "success", message: `Profile added — ordering for ${res.data.name}` });
+      toast.push({ type: "success", message: t("profileAdded", { name: res.data.name }) });
     },
     onError: (err) =>
-      toast.push({ type: "error", message: apiErrorMessage(err, "Could not save that profile") }),
+      toast.push({ type: "error", message: apiErrorMessage(err, t("profileSaveFailed")) }),
   });
 
   const placeOrder = useMutation({
     mutationFn: async (): Promise<{ orderId: string; confirming: boolean }> => {
-      if (!token) throw new ApiError("INTERNAL", "You are not signed in", 401);
-      if (!selectedAddressId) throw new ApiError("INTERNAL", "Select a delivery address", 400);
+      if (!token) throw new ApiError("INTERNAL", t("notSignedIn"), 401);
+      if (!selectedAddressId) throw new ApiError("INTERNAL", t("selectAddress"), 400);
       const body: CreateOrderBody = {
         addressId: selectedAddressId,
         paymentMethod,
@@ -359,10 +363,7 @@ export default function CheckoutPage() {
         } catch (err) {
           toast.push({
             type: "error",
-            message: apiErrorMessage(
-              err,
-              "Order placed, but that prescription couldn’t be attached — add it from the order screen",
-            ),
+            message: apiErrorMessage(err, t("rxAttachFailed")),
           });
         }
       }
@@ -392,14 +393,14 @@ export default function CheckoutPage() {
     // PAYMENT_UNAVAILABLE (Razorpay outage, 503) gets a friendly retry message
     // and server-received failures carry a "Support code" (x-request-id).
     onError: (err) =>
-      toast.push({ type: "error", message: apiErrorMessage(err, "Could not place the order") }),
+      toast.push({ type: "error", message: apiErrorMessage(err, t("orderFailed")) }),
   });
 
   /* --------------------------------------------------- address form */
 
   function captureLocation() {
     if (typeof navigator === "undefined" || !navigator.geolocation) {
-      toast.push({ type: "error", message: "Location is not available on this device" });
+      toast.push({ type: "error", message: t("locationUnavailable") });
       return;
     }
     setLocating(true);
@@ -411,11 +412,11 @@ export default function CheckoutPage() {
           lng: pos.coords.longitude.toFixed(6),
         }));
         setLocating(false);
-        toast.push({ type: "success", message: "Location captured" });
+        toast.push({ type: "success", message: t("locationCaptured") });
       },
       (err) => {
         setLocating(false);
-        toast.push({ type: "error", message: err.message || "Could not read your location" });
+        toast.push({ type: "error", message: err.message || t("locationReadFailed") });
       },
       { enableHighAccuracy: true, timeout: 10_000 },
     );
@@ -424,11 +425,11 @@ export default function CheckoutPage() {
   function submitAddress(e: React.FormEvent) {
     e.preventDefault();
     if (!form.line1.trim()) {
-      toast.push({ type: "error", message: "Address line 1 is required" });
+      toast.push({ type: "error", message: t("addressLine1Required") });
       return;
     }
     if (!/^[1-9]\d{5}$/.test(form.pincode)) {
-      toast.push({ type: "error", message: "Enter a valid 6-digit pincode" });
+      toast.push({ type: "error", message: t("pincodeInvalid") });
       return;
     }
     const lat = Number(form.lat);
@@ -443,7 +444,7 @@ export default function CheckoutPage() {
       lng >= -180 &&
       lng <= 180;
     if (!geoOk) {
-      toast.push({ type: "error", message: "Set a location (use my location or enter lat/lng)" });
+      toast.push({ type: "error", message: t("locationRequired") });
       return;
     }
     const body: CreateAddressBody = {
@@ -464,7 +465,7 @@ export default function CheckoutPage() {
     e.preventDefault();
     const name = patientForm.name.trim();
     if (!name) {
-      toast.push({ type: "error", message: "Enter the patient’s name" });
+      toast.push({ type: "error", message: t("patientNameRequired") });
       return;
     }
     const body: CreatePatientBody = {
@@ -479,18 +480,25 @@ export default function CheckoutPage() {
   /* ---------------------------------------------------- block reasoning */
 
   let blockReason: string | null = null;
-  if (!validate) blockReason = "Loading…";
-  else if (!validate.valid) blockReason = "Resolve the cart issues above";
+  // "We don't know yet" still disables the CTA, but the banner stays hidden —
+  // tracked as a flag rather than by comparing the rendered string against
+  // `tCommon("loading")`, which would silently break the moment two messages
+  // translate to the same text.
+  let blockPending = false;
+  if (!validate) {
+    blockReason = tCommon("loading");
+    blockPending = true;
+  } else if (!validate.valid) blockReason = t("blockCartIssues");
   else if (!totals?.minOrderMet)
-    blockReason = `Minimum order is ${formatPaise(totals?.minOrderPaise ?? 0)}`;
-  else if (!selectedAddressId) blockReason = "Select a delivery address";
+    blockReason = t("blockMinimumOrder", { amount: formatPaise(totals?.minOrderPaise ?? 0) });
+  else if (!selectedAddressId) blockReason = t("selectAddress");
   else if (!serviceability)
-    blockReason = svcQuery.isError ? "Could not check the delivery area" : "Checking serviceability…";
-  else if (!serviceability.serviceable) blockReason = "This address is outside our delivery area";
-  else if (store && !store.isOpen) blockReason = "The store is currently closed";
+    blockReason = svcQuery.isError ? t("blockAreaCheckFailed") : t("checkingServiceability");
+  else if (!serviceability.serviceable) blockReason = t("blockOutsideArea");
+  else if (store && !store.isOpen) blockReason = t("blockStoreClosed");
 
   const canPlace = blockReason === null && !placeOrder.isPending;
-  const payLabel = requiresRx || paymentMethod === "COD" ? "Place order" : "Pay & place order";
+  const payLabel = requiresRx || paymentMethod === "COD" ? t("placeOrder") : t("payAndPlaceOrder");
   // The coupon quote prices the cart only — the tip is never part of it, so it is
   // added on top of whichever total is authoritative for the cart.
   const payablePaise = (quote ? quote.totalPaise : (totals?.totalPaise ?? 0)) + tipPaise;
@@ -507,7 +515,7 @@ export default function CheckoutPage() {
 
   return (
     <div className="min-h-dvh bg-mesh">
-      <TopBar title="Checkout" back />
+      <TopBar title={t("title")} back />
 
       {validateQuery.isLoading ? (
         <div className="space-y-3 p-4" aria-hidden>
@@ -526,11 +534,11 @@ export default function CheckoutPage() {
       ) : !validate || validate.cart.items.length === 0 ? (
         <div className="p-4">
           <EmptyState
-            title="Your cart is empty"
-            hint="Add items before checking out."
+            title={t("emptyCart")}
+            hint={t("emptyCartHint")}
             action={
               <Link href="/shop" className="block">
-                <Button className={cn("w-full", CTA)}>Browse products</Button>
+                <Button className={cn("w-full", CTA)}>{tCommon("browseProducts")}</Button>
               </Link>
             }
           />
@@ -540,9 +548,7 @@ export default function CheckoutPage() {
           {/* store closed banner */}
           {store && !store.isOpen && (
             <div className="rounded-xl2 border border-warning/30 bg-warning/10 p-3.5">
-              <p className="text-sm font-semibold text-warning">
-                The store is currently closed — orders can’t be placed right now.
-              </p>
+              <p className="text-sm font-semibold text-warning">{t("storeClosed")}</p>
             </div>
           )}
 
@@ -550,12 +556,12 @@ export default function CheckoutPage() {
           {issues.length > 0 && (
             <div className="rounded-xl2 border border-warning/30 bg-warning/5 p-4 shadow-card2">
               <div className="mb-2 flex items-center justify-between gap-2">
-                <p className="text-sm font-semibold text-warning">Please review your cart</p>
+                <p className="text-sm font-semibold text-warning">{t("reviewCart")}</p>
                 <button
                   onClick={() => validateQuery.refetch()}
                   className="press min-h-[44px] px-2 text-xs font-semibold text-primary-700"
                 >
-                  Re-check
+                  {t("recheck")}
                 </button>
               </div>
               <ul className="space-y-1.5">
@@ -563,14 +569,17 @@ export default function CheckoutPage() {
                   <li key={`${issue.productId}-${issue.kind}`} className="text-sm text-ink-600">
                     • {issue.message}
                     {issue.availableQty !== undefined && (
-                      <span className="text-ink-400"> (only {issue.availableQty} left)</span>
+                      <span className="text-ink-400">
+                        {" "}
+                        {t("onlyNLeft", { count: issue.availableQty })}
+                      </span>
                     )}
                   </li>
                 ))}
               </ul>
               <Link href="/cart" className="mt-3 block">
                 <Button variant="secondary" className="press w-full">
-                  Edit cart
+                  {t("editCart")}
                 </Button>
               </Link>
             </div>
@@ -578,13 +587,13 @@ export default function CheckoutPage() {
 
           {/* -------------------------------------------------- address */}
           <Section
-            title="Delivery address"
+            title={t("deliveryAddress")}
             action={
               <button
                 onClick={() => setShowAddrForm(true)}
                 className="press min-h-[44px] px-2 text-sm font-semibold text-primary-700"
               >
-                + Add new
+                {t("addNew")}
               </button>
             }
           >
@@ -595,18 +604,18 @@ export default function CheckoutPage() {
               </div>
             ) : addressesQuery.isError ? (
               <ErrorState
-                message="Couldn’t load your addresses."
+                message={t("addressesLoadFailed")}
                 onRetry={() => addressesQuery.refetch()}
               />
             ) : addresses.length === 0 ? (
               <div className="glass rounded-xl2 p-4 shadow-card2">
-                <p className="text-sm text-ink-600">No saved addresses yet. Add one to continue.</p>
+                <p className="text-sm text-ink-600">{t("noAddresses")}</p>
                 <Button className={cn("mt-3 w-full", CTA)} onClick={() => setShowAddrForm(true)}>
-                  Add address
+                  {t("addAddress")}
                 </Button>
               </div>
             ) : (
-              <div className="space-y-2" role="radiogroup" aria-label="Delivery address">
+              <div className="space-y-2" role="radiogroup" aria-label={t("deliveryAddress")}>
                 {addresses.map((addr) => {
                   const active = addr.id === selectedAddressId;
                   return (
@@ -622,15 +631,21 @@ export default function CheckoutPage() {
                         <p className="text-sm font-semibold text-ink-900">
                           {addr.label}
                           {addr.isDefault && (
-                            <span className="ml-2 text-xs font-normal text-ink-600">Default</span>
+                            <span className="ml-2 text-xs font-normal text-ink-600">
+                              {t("addressDefault")}
+                            </span>
                           )}
                         </p>
                         <p className="text-sm text-ink-600">
                           {addr.line1}
                           {addr.line2 ? `, ${addr.line2}` : ""}
                         </p>
-                        {addr.landmark && <p className="text-xs text-ink-600">Near {addr.landmark}</p>}
-                        <p className="text-xs text-ink-600">PIN {addr.pincode}</p>
+                        {addr.landmark && (
+                          <p className="text-xs text-ink-600">
+                            {t("nearLandmark", { landmark: addr.landmark })}
+                          </p>
+                        )}
+                        <p className="text-xs text-ink-600">{t("pin", { pincode: addr.pincode })}</p>
                       </div>
                     </label>
                   );
@@ -642,35 +657,38 @@ export default function CheckoutPage() {
             {selectedAddress && (
               <div className="mt-2 text-sm" aria-live="polite">
                 {svcQuery.isLoading ? (
-                  <p className="text-ink-600">Checking serviceability…</p>
+                  <p className="text-ink-600">{t("checkingServiceability")}</p>
                 ) : svcQuery.isError ? (
-                  <p className="font-medium text-danger">Could not check the delivery area.</p>
+                  <p className="font-medium text-danger">{t("areaCheckFailedLine")}</p>
                 ) : serviceability && !serviceability.serviceable ? (
                   <p className="font-semibold text-danger">
-                    Outside our delivery area
+                    {t("outsideArea")}
                     {serviceability.distanceM
-                      ? ` (${(serviceability.distanceM / 1000).toFixed(1)} km away)`
+                      ? ` ${t("kmAway", { km: (serviceability.distanceM / 1000).toFixed(1) })}`
                       : ""}
                     .
                   </p>
                 ) : serviceability ? (
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl2 border border-success/20 bg-success/5 px-3 py-2">
                     <span className="text-sm font-semibold text-success">
-                      Deliverable
+                      {t("deliverable")}
                       {serviceability.deliveryPaise !== null
-                        ? ` · fee ${formatPaise(serviceability.deliveryPaise)}`
+                        ? ` · ${t("feeAmount", { amount: formatPaise(serviceability.deliveryPaise) })}`
                         : ""}
                       {serviceability.distanceM
-                        ? ` · ${(serviceability.distanceM / 1000).toFixed(1)} km`
+                        ? ` · ${t("kmDistance", { km: (serviceability.distanceM / 1000).toFixed(1) })}`
                         : ""}
                     </span>
                     {/* ETA heuristic mirrors the tracking screen's model: ride
                         time at ~5 m/s (≈18 km/h city riding) + ~15 min for
                         pharmacist check & packing. The 40-min promise is the cap. */}
                     <span className="text-xs text-ink-600">
-                      Est. delivery ~
-                      {Math.min(40, Math.max(20, Math.round(serviceability.distanceM / 300) + 15))}{" "}
-                      min after payment
+                      {t("etaAfterPayment", {
+                        minutes: Math.min(
+                          40,
+                          Math.max(20, Math.round(serviceability.distanceM / 300) + 15),
+                        ),
+                      })}
                     </span>
                   </div>
                 ) : null}
@@ -680,13 +698,13 @@ export default function CheckoutPage() {
 
           {/* ------------------------------------------- who is it for */}
           <Section
-            title="Who is this order for?"
+            title={t("whoFor")}
             action={
               <button
                 onClick={() => setShowPatientForm(true)}
                 className="press min-h-[44px] px-2 text-sm font-semibold text-primary-700"
               >
-                + Add profile
+                {t("addProfile")}
               </button>
             }
           >
@@ -697,9 +715,9 @@ export default function CheckoutPage() {
               </div>
             ) : (
               <>
-                <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Patient">
+                <div className="flex flex-wrap gap-2" role="radiogroup" aria-label={t("patient")}>
                   <PatientChip
-                    label="Myself"
+                    label={t("myself")}
                     sub={user.name ?? undefined}
                     active={patientId === null}
                     onSelect={() => setPatientId(null)}
@@ -708,7 +726,7 @@ export default function CheckoutPage() {
                     <PatientChip
                       key={p.id}
                       label={p.name}
-                      sub={RELATION_LABEL[p.relation]}
+                      sub={t(RELATION_KEY[p.relation])}
                       active={patientId === p.id}
                       onSelect={() => setPatientId(p.id)}
                     />
@@ -716,19 +734,22 @@ export default function CheckoutPage() {
                 </div>
                 {patientsFailed && (
                   <div className="mt-2 flex items-center justify-between gap-3">
-                    <p className="text-xs text-ink-600">Couldn’t load your saved profiles.</p>
+                    <p className="text-xs text-ink-600">{t("profilesLoadFailed")}</p>
                     <button
                       onClick={() => void patientsQuery.refetch()}
                       className="press min-h-[44px] px-2 text-xs font-semibold text-primary-700"
                     >
-                      Retry
+                      {tCommon("retry")}
                     </button>
                   </div>
                 )}
                 <p className="mt-2 text-xs text-ink-600">
                   {selectedPatient
-                    ? `This order will be dispensed for ${selectedPatient.name} (${RELATION_LABEL[selectedPatient.relation].toLowerCase()}).`
-                    : "Ordering for yourself. Add a profile to order for a family member — it keeps the pharmacy record accurate."}
+                    ? t("orderingForPatient", {
+                        name: selectedPatient.name,
+                        relation: t(RELATION_KEY[selectedPatient.relation]).toLowerCase(),
+                      })
+                    : t("orderingForSelf")}
                 </p>
               </>
             )}
@@ -736,13 +757,9 @@ export default function CheckoutPage() {
 
           {/* -------------------------------------------- prescription */}
           {requiresRx && (
-            <Section title="Prescription">
+            <Section title={t("prescription")}>
               <div className="rounded-xl2 border border-rx/25 bg-rx/5 p-3.5">
-                <p className="text-sm text-rx">
-                  This order contains prescription items. Attach a prescription from your locker
-                  now, or upload one on the order screen — either way a pharmacist reviews it before
-                  we dispatch.
-                </p>
+                <p className="text-sm text-rx">{t("rxBlurb")}</p>
               </div>
 
               {rxQuery.isLoading ? (
@@ -752,21 +769,18 @@ export default function CheckoutPage() {
                 </div>
               ) : rxFailed ? (
                 <div className="mt-2 flex items-center justify-between gap-3 rounded-xl2 border border-line bg-surface px-3.5 py-3">
-                  <p className="text-xs text-ink-600">Couldn’t load your prescription locker.</p>
+                  <p className="text-xs text-ink-600">{t("rxLockerLoadFailed")}</p>
                   <button
                     onClick={() => void rxQuery.refetch()}
                     className="press min-h-[44px] px-2 text-xs font-semibold text-primary-700"
                   >
-                    Retry
+                    {tCommon("retry")}
                   </button>
                 </div>
               ) : lockerRx.length === 0 ? (
-                <p className="mt-2 text-xs text-ink-600">
-                  No re-usable prescriptions in your locker yet — you can upload one right after
-                  placing this order.
-                </p>
+                <p className="mt-2 text-xs text-ink-600">{t("noLockerRx")}</p>
               ) : (
-                <div className="mt-2 space-y-2" role="radiogroup" aria-label="Prescription">
+                <div className="mt-2 space-y-2" role="radiogroup" aria-label={t("prescription")}>
                   {lockerRx.map((rx) => {
                     const active = rx.id === rxId;
                     return (
@@ -780,16 +794,16 @@ export default function CheckoutPage() {
                         />
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-ink-900">
-                            {rx.label ?? "Prescription"}
+                            {rx.label ?? t("prescription")}
                           </p>
                           <p className="truncate text-xs text-ink-600">
                             {[rx.doctorName, rx.patientName].filter(Boolean).join(" · ") ||
-                              "No doctor recorded"}
+                              t("noDoctorRecorded")}
                           </p>
                         </div>
                         <span className="shrink-0">
                           <Badge tone={rx.status === "APPROVED" ? "green" : "amber"}>
-                            {rx.status === "APPROVED" ? "Approved" : "In review"}
+                            {rx.status === "APPROVED" ? t("rxApproved") : t("rxInReview")}
                           </Badge>
                         </span>
                       </label>
@@ -804,12 +818,8 @@ export default function CheckoutPage() {
                       onChange={() => setRxId(null)}
                     />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-semibold text-ink-900">
-                        I’ll upload one after placing the order
-                      </p>
-                      <p className="text-xs text-ink-600">
-                        The order screen takes a photo or PDF of your prescription.
-                      </p>
+                      <p className="text-sm font-semibold text-ink-900">{t("uploadRxLater")}</p>
+                      <p className="text-xs text-ink-600">{t("uploadRxLaterHint")}</p>
                     </div>
                   </label>
                 </div>
@@ -819,35 +829,38 @@ export default function CheckoutPage() {
 
           {/* -------------------------------------------------- coupon */}
           <Section
-            title="Coupon"
+            title={t("coupon")}
             action={
               <Link
                 href="/offers"
                 className="press min-h-[44px] px-2 text-sm font-semibold text-primary-700"
               >
-                View offers
+                {t("viewOffers")}
               </Link>
             }
           >
             {quote ? (
               <div className="flex items-center justify-between gap-2 rounded-xl2 border border-success/30 bg-success/5 px-3.5 py-3">
                 <p className="text-sm font-semibold text-success">
-                  {quote.code} applied — you save {formatPaise(quote.discountPaise)}
+                  {t("couponApplied", {
+                    code: quote.code,
+                    amount: formatPaise(quote.discountPaise),
+                  })}
                 </p>
                 <button
                   type="button"
                   className="press min-h-[44px] shrink-0 px-2 text-xs font-semibold text-danger"
                   onClick={clearCoupon}
                 >
-                  Remove
+                  {tCommon("remove")}
                 </button>
               </div>
             ) : (
               <>
                 <div className="flex gap-2">
                   <TextInput
-                    placeholder="Coupon code (optional)"
-                    aria-label="Coupon code"
+                    placeholder={t("couponPlaceholder")}
+                    aria-label={t("couponCodeLabel")}
                     value={coupon}
                     onChange={(e) => {
                       setCoupon(e.target.value.toUpperCase());
@@ -862,7 +875,7 @@ export default function CheckoutPage() {
                     loading={applyCoupon.isPending}
                     onClick={() => applyCoupon.mutate(coupon.trim().toUpperCase())}
                   >
-                    Apply
+                    {t("apply")}
                   </Button>
                 </div>
                 {couponError && (
@@ -875,11 +888,11 @@ export default function CheckoutPage() {
           </Section>
 
           {/* ------------------------------------- delivery preferences */}
-          <Section title="Delivery preferences">
+          <Section title={t("deliveryPreferences")}>
             <div className="glass space-y-3 rounded-xl2 p-3.5 shadow-card2">
-              <Field label="Note for the rider" hint="Optional · e.g. “Blue gate, call on arrival”">
+              <Field label={t("riderNote")} hint={t("riderNoteHint")}>
                 <TextInput
-                  placeholder="Any directions for the delivery partner?"
+                  placeholder={t("riderNotePlaceholder")}
                   maxLength={200}
                   value={deliveryNote}
                   onChange={(e) => setDeliveryNote(e.target.value)}
@@ -899,11 +912,9 @@ export default function CheckoutPage() {
                   onChange={(e) => setContactless(e.target.checked)}
                 />
                 <span className="text-sm text-ink-900">
-                  Contactless delivery
+                  {t("contactless")}
                   <span className="block text-xs text-ink-600">
-                    {paymentMethod === "COD"
-                      ? "Not available with cash on delivery"
-                      : "We’ll leave the package at your door"}
+                    {paymentMethod === "COD" ? t("contactlessCodHint") : t("contactlessHint")}
                   </span>
                 </span>
               </label>
@@ -911,14 +922,11 @@ export default function CheckoutPage() {
           </Section>
 
           {/* ----------------------------------------------- rider tip */}
-          <Section title="Tip your rider">
+          <Section title={t("tipTitle")}>
             <div className="glass space-y-3 rounded-xl2 p-3.5 shadow-card2">
-              <p className="text-xs text-ink-600">
-                Tipping is optional — the full amount goes to the delivery partner who brings your
-                order.
-              </p>
-              <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Rider tip">
-                <TipChip label="No tip" active={tipChoice === 0} onSelect={() => pickTip(0)} />
+              <p className="text-xs text-ink-600">{t("tipHint")}</p>
+              <div className="flex flex-wrap gap-2" role="radiogroup" aria-label={t("riderTip")}>
+                <TipChip label={t("tipNone")} active={tipChoice === 0} onSelect={() => pickTip(0)} />
                 {TIP_PRESETS_PAISE.map((p) => (
                   <TipChip
                     key={p}
@@ -928,13 +936,16 @@ export default function CheckoutPage() {
                   />
                 ))}
                 <TipChip
-                  label="Custom"
+                  label={t("tipCustom")}
                   active={tipChoice === "custom"}
                   onSelect={() => pickTip("custom")}
                 />
               </div>
               {tipChoice === "custom" && (
-                <Field label="Tip amount (₹)" hint={`Up to ${formatPaise(MAX_TIP_PAISE)}`}>
+                <Field
+                  label={t("tipAmount")}
+                  hint={t("tipMax", { amount: formatPaise(MAX_TIP_PAISE) })}
+                >
                   <TextInput
                     inputMode="numeric"
                     placeholder="50"
@@ -950,15 +961,15 @@ export default function CheckoutPage() {
               )}
               <p className="text-xs text-ink-600" aria-live="polite">
                 {tipPaise > 0
-                  ? `${formatPaise(tipPaise)} added for your delivery partner.`
-                  : "No tip added."}
+                  ? t("tipAdded", { amount: formatPaise(tipPaise) })
+                  : t("noTipAdded")}
               </p>
             </div>
           </Section>
 
           {/* -------------------------------------------------- payment */}
-          <Section title="Payment method">
-            <div className="space-y-2" role="radiogroup" aria-label="Payment method">
+          <Section title={t("paymentMethod")}>
+            <div className="space-y-2" role="radiogroup" aria-label={t("paymentMethod")}>
               <label className={optionCls(paymentMethod === "PREPAID")}>
                 <input
                   type="radio"
@@ -968,8 +979,8 @@ export default function CheckoutPage() {
                   onChange={() => setPaymentMethod("PREPAID")}
                 />
                 <div>
-                  <p className="text-sm font-semibold text-ink-900">Pay online</p>
-                  <p className="text-xs text-ink-600">UPI, cards &amp; netbanking via Razorpay</p>
+                  <p className="text-sm font-semibold text-ink-900">{t("payOnline")}</p>
+                  <p className="text-xs text-ink-600">{t("payOnlineHint")}</p>
                 </div>
               </label>
 
@@ -983,15 +994,15 @@ export default function CheckoutPage() {
                   onChange={() => setPaymentMethod("COD")}
                 />
                 <div>
-                  <p className="text-sm font-semibold text-ink-900">Cash on delivery</p>
+                  <p className="text-sm font-semibold text-ink-900">{t("cod")}</p>
                   <p className="text-xs text-ink-600">
                     {!store?.featureFlags.codEnabled
-                      ? "Currently unavailable"
+                      ? t("codUnavailable")
                       : totals && store && codComparablePaise > store.codLimitPaise
-                        ? `Not available above ${formatPaise(store.codLimitPaise)}${
-                            tipPaise > 0 ? " (including the tip)" : ""
-                          }`
-                        : "Pay the driver on delivery"}
+                        ? t(tipPaise > 0 ? "codAboveLimitWithTip" : "codAboveLimit", {
+                            amount: formatPaise(store.codLimitPaise),
+                          })
+                        : t("codHint")}
                   </p>
                 </div>
               </label>
@@ -1000,39 +1011,44 @@ export default function CheckoutPage() {
 
           {/* -------------------------------------------------- bill */}
           {totals && (
-            <Section title="Bill details">
+            <Section title={t("billDetails")}>
               <div className="glass rounded-xl2 p-4 shadow-card2">
-                <BillRow label={`Items (${itemCount})`} value={formatPaise(totals.itemsPaise)} />
                 <BillRow
-                  label="Delivery fee"
-                  value={totals.deliveryPaise === 0 ? "FREE" : formatPaise(totals.deliveryPaise)}
+                  label={t("items", { count: itemCount })}
+                  value={formatPaise(totals.itemsPaise)}
+                />
+                <BillRow
+                  label={t("deliveryFee")}
+                  value={totals.deliveryPaise === 0 ? t("free") : formatPaise(totals.deliveryPaise)}
                   accent={totals.deliveryPaise === 0}
                 />
                 {quote && (
                   <div className="flex items-center justify-between py-1 text-sm">
-                    <span className="text-success">Discount ({quote.code})</span>
+                    <span className="text-success">
+                      {t("discount")} ({quote.code})
+                    </span>
                     <span className="tabular-nums text-success">
                       − {formatPaise(quote.discountPaise)}
                     </span>
                   </div>
                 )}
-                {tipPaise > 0 && <BillRow label="Rider tip" value={formatPaise(tipPaise)} />}
+                {tipPaise > 0 && <BillRow label={t("riderTip")} value={formatPaise(tipPaise)} />}
                 <div className="my-2 border-t border-line" />
                 <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold text-ink-900">To pay</span>
+                  <span className="text-sm font-semibold text-ink-900">{t("toPay")}</span>
                   <span className="text-lg font-semibold tabular-nums text-ink-900">
                     {formatPaise(payablePaise)}
                   </span>
                 </div>
                 {!quote && coupon.trim() !== "" && (
-                  <p className="mt-1 text-xs text-ink-600">
-                    Tap Apply to see the discount before you pay.
-                  </p>
+                  <p className="mt-1 text-xs text-ink-600">{t("applyCouponHint")}</p>
                 )}
                 {!totals.minOrderMet && (
                   <p className="mt-2 text-xs font-semibold text-warning">
-                    Add {formatPaise(Math.max(0, totals.minOrderPaise - totals.itemsPaise))} more to
-                    reach the {formatPaise(totals.minOrderPaise)} minimum.
+                    {t("addMoreForMinimum", {
+                      amount: formatPaise(Math.max(0, totals.minOrderPaise - totals.itemsPaise)),
+                      minimum: formatPaise(totals.minOrderPaise),
+                    })}
                   </p>
                 )}
               </div>
@@ -1044,7 +1060,7 @@ export default function CheckoutPage() {
       {/* --------------------------------------------------- sticky CTA */}
       {validate && validate.cart.items.length > 0 && (
         <div className="fixed bottom-16 left-1/2 z-30 w-full max-w-md -translate-x-1/2 glass px-4 py-3 shadow-[0_-8px_28px_rgba(15,23,42,0.10)]">
-          {blockReason && blockReason !== "Loading…" && (
+          {blockReason && !blockPending && (
             <p className="mb-2 text-center text-xs font-semibold text-warning" aria-live="polite">
               {blockReason}
             </p>
@@ -1064,48 +1080,48 @@ export default function CheckoutPage() {
       <Modal
         open={showAddrForm}
         onClose={() => setShowAddrForm(false)}
-        title="Add address"
+        title={t("addAddress")}
         footer={
           <>
             <Button variant="secondary" onClick={() => setShowAddrForm(false)}>
-              Cancel
+              {tCommon("cancel")}
             </Button>
             <Button className={CTA} loading={createAddress.isPending} onClick={submitAddress}>
-              Save address
+              {t("saveAddress")}
             </Button>
           </>
         }
       >
         <form className="space-y-3" onSubmit={submitAddress}>
-          <Field label="Label" hint="e.g. Home, Work (optional)">
+          <Field label={t("addressLabel")} hint={t("addressLabelHint")}>
             <TextInput
-              placeholder="Home"
+              placeholder={t("addressLabelPlaceholder")}
               value={form.label}
               onChange={(e) => setForm((f) => ({ ...f, label: e.target.value }))}
             />
           </Field>
-          <Field label="Address line 1">
+          <Field label={t("addressLine1")}>
             <TextInput
-              placeholder="House / flat, street"
+              placeholder={t("addressLine1Placeholder")}
               value={form.line1}
               onChange={(e) => setForm((f) => ({ ...f, line1: e.target.value }))}
             />
           </Field>
-          <Field label="Address line 2" hint="Optional">
+          <Field label={t("addressLine2")} hint={t("optional")}>
             <TextInput
-              placeholder="Area, locality"
+              placeholder={t("addressLine2Placeholder")}
               value={form.line2}
               onChange={(e) => setForm((f) => ({ ...f, line2: e.target.value }))}
             />
           </Field>
-          <Field label="Landmark" hint="Optional">
+          <Field label={t("landmark")} hint={t("optional")}>
             <TextInput
-              placeholder="Near…"
+              placeholder={t("landmarkPlaceholder")}
               value={form.landmark}
               onChange={(e) => setForm((f) => ({ ...f, landmark: e.target.value }))}
             />
           </Field>
-          <Field label="Pincode">
+          <Field label={t("pincode")}>
             <TextInput
               inputMode="numeric"
               maxLength={6}
@@ -1125,10 +1141,10 @@ export default function CheckoutPage() {
               loading={locating}
               onClick={captureLocation}
             >
-              Use my location
+              {t("useMyLocation")}
             </Button>
             <div className="mt-2 grid grid-cols-2 gap-2">
-              <Field label="Latitude">
+              <Field label={t("latitude")}>
                 <TextInput
                   inputMode="decimal"
                   placeholder="12.971600"
@@ -1136,7 +1152,7 @@ export default function CheckoutPage() {
                   onChange={(e) => setForm((f) => ({ ...f, lat: e.target.value }))}
                 />
               </Field>
-              <Field label="Longitude">
+              <Field label={t("longitude")}>
                 <TextInput
                   inputMode="decimal"
                   placeholder="77.594600"
@@ -1155,47 +1171,44 @@ export default function CheckoutPage() {
       <Modal
         open={showPatientForm}
         onClose={() => setShowPatientForm(false)}
-        title="Add a patient profile"
+        title={t("addPatientProfile")}
         footer={
           <>
             <Button variant="secondary" onClick={() => setShowPatientForm(false)}>
-              Cancel
+              {tCommon("cancel")}
             </Button>
             <Button className={CTA} loading={createPatient.isPending} onClick={submitPatient}>
-              Save profile
+              {t("saveProfile")}
             </Button>
           </>
         }
       >
         <form className="space-y-3" onSubmit={submitPatient}>
-          <p className="text-xs text-ink-600">
-            Dispensing records name the patient, not the account holder — so a profile keeps the
-            pharmacy register correct for Schedule H/H1 medicines.
-          </p>
-          <Field label="Full name">
+          <p className="text-xs text-ink-600">{t("patientFormBlurb")}</p>
+          <Field label={t("fullName")}>
             <TextInput
-              placeholder="e.g. Aarav Sharma"
+              placeholder={t("fullNamePlaceholder")}
               maxLength={80}
               value={patientForm.name}
               onChange={(e) => setPatientForm((f) => ({ ...f, name: e.target.value }))}
             />
           </Field>
-          <Field label="Relation">
+          <Field label={t("relation")}>
             <Select
               value={patientForm.relation}
               onChange={(e) =>
                 setPatientForm((f) => ({ ...f, relation: e.target.value as PatientRelation }))
               }
             >
-              {(Object.keys(RELATION_LABEL) as PatientRelation[]).map((r) => (
+              {(Object.keys(RELATION_KEY) as PatientRelation[]).map((r) => (
                 <option key={r} value={r}>
-                  {RELATION_LABEL[r]}
+                  {t(RELATION_KEY[r])}
                 </option>
               ))}
             </Select>
           </Field>
           <div className="grid grid-cols-2 gap-2">
-            <Field label="Date of birth" hint="Optional">
+            <Field label={t("dob")} hint={t("optional")}>
               <TextInput
                 type="date"
                 max={new Date().toISOString().slice(0, 10)}
@@ -1203,15 +1216,15 @@ export default function CheckoutPage() {
                 onChange={(e) => setPatientForm((f) => ({ ...f, dob: e.target.value }))}
               />
             </Field>
-            <Field label="Gender" hint="Optional">
+            <Field label={t("gender")} hint={t("optional")}>
               <Select
                 value={patientForm.gender}
                 onChange={(e) => setPatientForm((f) => ({ ...f, gender: e.target.value }))}
               >
-                <option value="">Not specified</option>
-                <option value="F">Female</option>
-                <option value="M">Male</option>
-                <option value="OTHER">Other</option>
+                <option value="">{t("genderUnspecified")}</option>
+                <option value="F">{t("genderFemale")}</option>
+                <option value="M">{t("genderMale")}</option>
+                <option value="OTHER">{t("genderOther")}</option>
               </Select>
             </Field>
           </div>

@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import type { Category, ProductSort, ProductSummary } from "@medrush/contracts";
 import { api, qs } from "@/lib/api";
 import { useStore } from "@/lib/store";
@@ -32,12 +33,13 @@ function loadRecents(): string[] {
 }
 
 /** Sort options surfaced as pills; undefined = default (relevance for search). */
-const SORTS: { label: string; value: ProductSort | undefined }[] = [
-  { label: "Default", value: undefined },
-  { label: "Price ↑", value: "price_asc" },
-  { label: "Price ↓", value: "price_desc" },
-  { label: "Discount", value: "discount" },
-  { label: "A–Z", value: "name" },
+type SortKey = "sortDefault" | "sortPriceAsc" | "sortPriceDesc" | "sortDiscount" | "sortName";
+const SORTS: { key: SortKey; value: ProductSort | undefined }[] = [
+  { key: "sortDefault", value: undefined },
+  { key: "sortPriceAsc", value: "price_asc" },
+  { key: "sortPriceDesc", value: "price_desc" },
+  { key: "sortDiscount", value: "discount" },
+  { key: "sortName", value: "name" },
 ];
 
 const PILL_BASE =
@@ -71,6 +73,8 @@ function ShopFallback() {
 }
 
 function ShopBrowser() {
+  const t = useTranslations("shop");
+  const tc = useTranslations("common");
   const { store, isLoading: storeLoading } = useStore();
 
   // Deep links from marketing/offers surfaces: /shop?category=&concern=&search=.
@@ -223,8 +227,8 @@ function ShopBrowser() {
   const activeCategoryName = categories.find((c) => c.slug === category)?.name;
   const activeConcernName = (concernsQuery.data?.data ?? []).find((c) => c.slug === concern)?.name;
   const resultsTitle = search
-    ? `Results for “${search}”`
-    : (activeConcernName ?? activeCategoryName ?? "Popular right now");
+    ? t("resultsFor", { query: search })
+    : (activeConcernName ?? activeCategoryName ?? t("popularNow"));
 
   return (
     <div className="pb-6">
@@ -233,7 +237,7 @@ function ShopBrowser() {
           <div className="min-w-0">
             <p className="flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider text-primary-700">
               <BoltIcon />
-              Delivery in ~40 min
+              {t("deliveryEta")}
             </p>
             {storeLoading && !store ? (
               <Skeleton className="mt-1.5 h-5 w-40 rounded" />
@@ -251,9 +255,7 @@ function ShopBrowser() {
         {store && !store.isOpen && (
           <p className="mt-3 flex items-start gap-2 rounded-xl2 border border-accent/30 bg-accent/10 px-3 py-2 text-xs font-semibold text-ink-900">
             <WarnIcon />
-            <span>
-              Store is currently closed. You can browse now — orders open at {store.openTime}.
-            </span>
+            <span>{t("storeClosed", { time: store.openTime })}</span>
           </p>
         )}
 
@@ -266,9 +268,9 @@ function ShopBrowser() {
             inputMode="search"
             enterKeyHint="search"
             autoComplete="off"
-            aria-label="Search medicines and health products"
+            aria-label={t("searchAria")}
             className="glass w-full rounded-xl2 py-3 pl-10 pr-11 text-sm text-ink-900 shadow-card2 outline-none placeholder:text-ink-400 [&::-webkit-search-cancel-button]:appearance-none"
-            placeholder="Search medicines & health products"
+            placeholder={t("searchPlaceholder")}
             value={rawSearch}
             // Keep the category — the API supports search WITHIN a category.
             onChange={(e) => setRawSearch(e.target.value)}
@@ -276,7 +278,7 @@ function ShopBrowser() {
           {rawSearch !== "" && (
             <button
               type="button"
-              aria-label="Clear search"
+              aria-label={t("clearSearch")}
               onClick={() => setRawSearch("")}
               className="press absolute right-1 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-full text-ink-400"
             >
@@ -304,20 +306,23 @@ function ShopBrowser() {
               onClick={clearRecents}
               className="press min-h-11 shrink-0 px-2 text-xs font-semibold text-primary-700"
             >
-              Clear
+              {t("clear")}
             </button>
           </div>
         )}
       </header>
 
-      <nav aria-label="Categories" className="no-scrollbar flex gap-2 overflow-x-auto px-4 py-3">
+      <nav
+        aria-label={t("categories")}
+        className="no-scrollbar flex gap-2 overflow-x-auto px-4 py-3"
+      >
         <FilterPill
           active={browsingDefault}
           onClick={resetAll}
           className="px-4 text-sm"
-          label="All products"
+          label={t("allProducts")}
         >
-          All
+          {t("all")}
         </FilterPill>
         {catsQuery.isLoading &&
           [0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-11 w-24 rounded-pill" />)}
@@ -344,12 +349,10 @@ function ShopBrowser() {
             <TagIcon />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-bold text-ink-900">Offers &amp; coupon codes</span>
-            <span className="block truncate text-xs text-ink-600">
-              Save more on every order — live deals inside
-            </span>
+            <span className="block text-sm font-bold text-ink-900">{t("offersStrip")}</span>
+            <span className="block truncate text-xs text-ink-600">{t("offersStripHint")}</span>
           </span>
-          <span className="shrink-0 text-xs font-bold text-primary-700">View all →</span>
+          <span className="shrink-0 text-xs font-bold text-primary-700">{t("viewAll")} →</span>
         </Link>
       </Reveal>
 
@@ -359,7 +362,7 @@ function ShopBrowser() {
           discarded before). Shown only in the default browse state. */}
       {browsingDefault && categories.length > 0 && (
         <Reveal as="section" className="pb-4">
-          <SectionHeader title="Shop by category" hint="Everyday essentials, sorted" />
+          <SectionHeader title={t("shopByCategory")} hint={t("shopByCategoryHint")} />
           <ul className="grid grid-cols-4 gap-3 px-4">
             {categories.slice(0, 8).map((c) => (
               <li key={c.id}>
@@ -393,8 +396,11 @@ function ShopBrowser() {
           title={resultsTitle}
           hint={
             productsQuery.isLoading
-              ? "Loading…"
-              : `${products.length}${hasNextPage ? "+" : ""} product${products.length === 1 ? "" : "s"}`
+              ? tc("loading")
+              : t("productCount", {
+                  count: products.length,
+                  n: `${products.length}${hasNextPage ? "+" : ""}`,
+                })
           }
           action={
             filtersActive ? (
@@ -403,7 +409,7 @@ function ShopBrowser() {
                 onClick={resetAll}
                 className="press rounded-pill px-2 py-1 text-xs font-semibold text-primary-700"
               >
-                Clear all
+                {t("clearAll")}
               </button>
             ) : undefined
           }
@@ -412,17 +418,17 @@ function ShopBrowser() {
         {/* Sort + quick filters — server-side via the extended products query. */}
         <div
           role="group"
-          aria-label="Sort and filter products"
+          aria-label={t("sortFilterGroup")}
           className="no-scrollbar flex items-center gap-2 overflow-x-auto px-4 pb-3"
         >
           {SORTS.map((s) => (
             <FilterPill
-              key={s.label}
+              key={s.key}
               active={sort === s.value}
               onClick={() => setSort(s.value)}
               className="px-3.5"
             >
-              {s.label}
+              {t(s.key)}
             </FilterPill>
           ))}
           <span className="h-5 w-px shrink-0 bg-line" aria-hidden />
@@ -431,14 +437,14 @@ function ShopBrowser() {
             onClick={() => setInStockOnly((v) => !v)}
             className="px-3.5"
           >
-            In stock
+            {t("inStock")}
           </FilterPill>
           <FilterPill
             active={discountedOnly}
             onClick={() => setDiscountedOnly((v) => !v)}
             className="px-3.5"
           >
-            On offer
+            {t("onOffer")}
           </FilterPill>
           <FilterPill
             active={rxFilter !== undefined}
@@ -447,14 +453,14 @@ function ShopBrowser() {
             }
             className="px-3.5"
           >
-            {rxFilter === undefined ? "Rx: all" : rxFilter ? "Rx only" : "No Rx"}
+            {rxFilter === undefined ? t("rxAll") : rxFilter ? t("rxOnly") : t("rxNone")}
           </FilterPill>
         </div>
 
         <p aria-live="polite" className="sr-only">
           {productsQuery.isLoading
-            ? "Loading products"
-            : `${products.length} products shown for ${resultsTitle}`}
+            ? t("loadingProducts")
+            : t("resultsAnnounce", { count: products.length, title: resultsTitle })}
         </p>
 
         <div className="px-4">
@@ -467,13 +473,13 @@ function ShopBrowser() {
             <ProductGridSkeleton count={8} />
           ) : products.length === 0 ? (
             <EmptyState
-              title="No products found"
-              hint="Try a different search, category or health concern."
+              title={t("noProducts")}
+              hint={t("noResultsHint")}
               icon={<SearchIcon className="h-8 w-8" />}
               action={
                 filtersActive ? (
                   <Button variant="secondary" className="w-full" onClick={resetAll}>
-                    Clear all filters
+                    {t("clearAllFilters")}
                   </Button>
                 ) : undefined
               }

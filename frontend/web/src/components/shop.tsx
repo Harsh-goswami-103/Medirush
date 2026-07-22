@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import type { ProductSummary } from "@medrush/contracts";
 import { useAuth } from "@/lib/auth";
 import { useCart } from "@/lib/cart";
@@ -23,12 +24,13 @@ export function ProductImage({ url, name, className }: { url: string | null; nam
 
 /** Add button that becomes a −/+ stepper once the item is in the cart. */
 export function AddOrStepper({ product, block }: { product: ProductSummary; block?: boolean }) {
+  const t = useTranslations("product");
   const { user } = useAuth();
   const { qtyOf, setItem } = useCart();
   const qty = qtyOf(product.id);
 
   if (!product.inStock) {
-    return <span className="rounded-input px-2 py-1 text-xs font-medium text-ink-400">Out of stock</span>;
+    return <span className="rounded-input px-2 py-1 text-xs font-medium text-ink-400">{t("outOfStock")}</span>;
   }
   if (!user) {
     return (
@@ -39,7 +41,7 @@ export function AddOrStepper({ product, block }: { product: ProductSummary; bloc
           block && "w-full text-center",
         )}
       >
-        Add
+        {t("add")}
       </Link>
     );
   }
@@ -53,18 +55,18 @@ export function AddOrStepper({ product, block }: { product: ProductSummary; bloc
           block && "w-full",
         )}
       >
-        Add
+        {t("add")}
       </button>
     );
   }
   return (
     <div className={cn("flex items-center gap-2 rounded-input bg-primary-600 text-white", block ? "justify-between px-3 py-1.5" : "px-1")}>
-      <button aria-label="Decrease" className="px-1.5 text-lg leading-none" onClick={() => setItem.mutate({ productId: product.id, qty: qty - 1 })}>
+      <button aria-label={t("decrease")} className="px-1.5 text-lg leading-none" onClick={() => setItem.mutate({ productId: product.id, qty: qty - 1 })}>
         −
       </button>
       <span className="min-w-4 text-center text-sm font-semibold tabular-nums">{qty}</span>
       <button
-        aria-label="Increase"
+        aria-label={t("increase")}
         className="px-1.5 text-lg leading-none disabled:opacity-50"
         disabled={qty >= product.maxPerOrder}
         onClick={() => setItem.mutate({ productId: product.id, qty: Math.min(qty + 1, product.maxPerOrder) })}

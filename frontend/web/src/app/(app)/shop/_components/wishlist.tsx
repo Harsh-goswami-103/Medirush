@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import type { WishlistStatus } from "@medrush/contracts";
 import { api, apiErrorMessage, qs } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -34,6 +35,7 @@ export interface WishlistController {
 }
 
 export function useWishlist(idGroups: string[][]): WishlistController {
+  const t = useTranslations("product");
   const { user } = useAuth();
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -86,7 +88,7 @@ export function useWishlist(idGroups: string[][]): WishlistController {
     },
     onError: (err, { productId, previous }) => {
       setOverrides((prev) => ({ ...prev, [productId]: previous }));
-      toast.push({ type: "error", message: apiErrorMessage(err, "Could not update your wishlist") });
+      toast.push({ type: "error", message: apiErrorMessage(err, t("wishlistError")) });
     },
     onSettled: (_res, _err, { productId }) => {
       setPendingIds((prev) => prev.filter((id) => id !== productId));
@@ -139,6 +141,7 @@ export function WishlistHeart({
   controller: WishlistController;
   className?: string;
 }) {
+  const t = useTranslations("product");
   const shell =
     "absolute right-0.5 top-0.5 z-10 grid h-11 w-11 place-items-center press";
   const face =
@@ -148,7 +151,7 @@ export function WishlistHeart({
     return (
       <Link
         href="/login"
-        aria-label={`Sign in to save ${productName}`}
+        aria-label={t("signInToSaveNamed", { name: productName })}
         className={cn(shell, className)}
       >
         <span className={cn(face, "text-ink-600")}>
@@ -169,7 +172,9 @@ export function WishlistHeart({
       aria-pressed={wishlisted}
       aria-busy={pending}
       aria-label={
-        wishlisted ? `Remove ${productName} from wishlist` : `Save ${productName} to wishlist`
+        wishlisted
+          ? t("removeNamedFromWishlist", { name: productName })
+          : t("saveNamedToWishlist", { name: productName })
       }
       className={cn(shell, "disabled:opacity-60", className)}
     >

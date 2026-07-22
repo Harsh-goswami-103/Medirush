@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, Noto_Sans_Devanagari } from "next/font/google";
+import { NextIntlClientProvider } from "next-intl";
+import { getLocale, getMessages } from "next-intl/server";
 import "./globals.css";
 import { Providers } from "./providers";
 import { ServiceWorkerRegistration } from "@/components/ServiceWorkerRegistration";
@@ -36,11 +38,18 @@ export const viewport: Viewport = {
  * the `(app)` route group so the `(marketing)` landing page can render
  * full-bleed and responsive without a bottom tab bar.
  */
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // Locale comes from a cookie (src/i18n/request.ts), so `lang` is resolved per
+  // request — screen readers and Devanagari shaping both depend on it being right.
+  const locale = await getLocale();
+  const messages = await getMessages();
+
   return (
-    <html lang="en" className={`${inter.variable} ${notoDevanagari.variable}`}>
+    <html lang={locale} className={`${inter.variable} ${notoDevanagari.variable}`}>
       <body>
-        <Providers>{children}</Providers>
+        <NextIntlClientProvider locale={locale} messages={messages}>
+          <Providers>{children}</Providers>
+        </NextIntlClientProvider>
         {/* Offline service worker (public/sw.js) — registers in production only. */}
         <ServiceWorkerRegistration />
       </body>
