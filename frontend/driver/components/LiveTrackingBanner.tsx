@@ -22,7 +22,14 @@ export function LiveTrackingBanner({ style }: { style?: StyleProp<ViewStyle> }) 
       <ActivityIndicator color={colors.warning} />
       <View style={styles.text}>
         <Txt size={font.base} weight="800" color="warning">
-          Live tracking offline — reconnecting
+          {/*
+            The headline must agree with the LiveTrackingDot beside it. The dot's
+            predicate is `connected` alone; this banner's is stricter (it also
+            fires on unsent pings). Saying "offline" while the socket is up would
+            put a green "Live" chip directly above a red "offline" banner and
+            teach the driver to distrust both.
+          */}
+          {connected ? "Live tracking degraded" : "Live tracking offline — reconnecting"}
         </Txt>
         <Txt size={font.sm} color="muted">
           {location.droppedRecent > 0
@@ -34,7 +41,42 @@ export function LiveTrackingBanner({ style }: { style?: StyleProp<ViewStyle> }) 
   );
 }
 
+/**
+ * Always-on socket-status chip — the same dot + "Live"/"Offline" the Home screen
+ * (app/(tabs)/index.tsx) puts in its header. Mid-delivery the driver never sees
+ * Home, so without this the only connectivity signal on the screen that matters
+ * most is the degraded banner above, which by design is invisible when healthy —
+ * i.e. "nothing on screen" would have to mean both "fine" and "not wired up".
+ * The chip makes "fine" an explicit, glanceable state on both screens alike.
+ *
+ * Deliberately mirrors Home's `connected` only: the nuance (dropped pings, sender
+ * not registered) is spelled out by LiveTrackingBanner rather than crammed into
+ * a 8px dot, and keeping the predicate identical keeps the two screens honest.
+ */
+export function LiveTrackingDot() {
+  const { connected } = useDispatch();
+  return (
+    <View
+      style={styles.dotRow}
+      accessibilityRole="text"
+      accessibilityLabel={connected ? "Live tracking connected" : "Live tracking offline"}
+    >
+      <View
+        style={[
+          styles.dot,
+          { backgroundColor: connected ? colors.success : colors.textFaint },
+        ]}
+      />
+      <Txt size={font.xs} color={connected ? "success" : "faint"}>
+        {connected ? "Live" : "Offline"}
+      </Txt>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  dotRow: { flexDirection: "row", alignItems: "center", gap: space.xs },
+  dot: { width: 8, height: 8, borderRadius: 4 },
   banner: {
     flexDirection: "row",
     alignItems: "center",
