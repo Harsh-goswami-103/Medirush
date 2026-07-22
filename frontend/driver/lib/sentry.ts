@@ -28,3 +28,39 @@ export function initSentry(): void {
     // Session Replay is opt-in per privacy review — off by default.
   });
 }
+
+/**
+ * Live-tracking drop telemetry (lib/locationSink.ts). Both helpers are
+ * DSN-gated no-ops, and the caller owns the throttling — the breadcrumb marks
+ * the start of an outage, the message is the aggregated report for it.
+ */
+
+/** Marks the start of a GPS outage; rides along with the next captured event. */
+export function addLocationDropBreadcrumb(data: {
+  senderRegistered: boolean;
+  droppedTotal: number;
+  lastForwardAt: number | null;
+}): void {
+  if (!SENTRY_DSN) return;
+  Sentry.addBreadcrumb({
+    category: "gps",
+    level: "warning",
+    message: "Live location drop started",
+    data,
+  });
+}
+
+/** Aggregated report for an ongoing GPS outage — never one event per ping. */
+export function reportDroppedLocationPings(data: {
+  dropped: number;
+  droppedTotal: number;
+  senderRegistered: boolean;
+  lastForwardAt: number | null;
+}): void {
+  if (!SENTRY_DSN) return;
+  Sentry.captureMessage("Driver GPS pings dropped — no live location sender", {
+    level: "warning",
+    tags: { area: "live-tracking" },
+    extra: { ...data },
+  });
+}
