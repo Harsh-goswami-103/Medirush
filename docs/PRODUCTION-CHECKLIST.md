@@ -70,7 +70,10 @@ Updated 2026-07-13 (Phase 7.5 — post-audit hardening wave; 70-finding producti
 - ✅ Watchdog blindspots closed: PENDING_PAYMENT (auto-expires + releases stock), PACKING >20m, RX_REVIEW >45m, ASSIGNED-no-pickup >15m, orphaned refund claims
 - ✅ All pg-boss worker failures log + reach Sentry (queue-tagged) — was silent
 - 🟡 Sentry DSNs all surfaces + release tags — set 4 DSNs at deploy (backend refuses to boot without its DSN)
-- ⬜ Uptime monitor + alert channel (Better Stack on `/readyz` + WhatsApp/phone escalation) — with `BACKUP_HEARTBEAT_URL` as the backup dead-man's-switch
+- 🟡 **Uptime self-check cron now in-repo** (was: nothing watching `/readyz`): a 5-minute pg-boss job GETs a health URL (10s deadline), logs status + response time, and on failure POSTs a Slack-compatible `{ text }` alert **and** captures to Sentry. Alert fatigue is bounded — it pages on entering failure, then only every 6th consecutive failure (~30 min), plus one recovery line. Never throws out of the worker. Config-gated: no webhook → not scheduled (dev/CI silent).
+  - `UPTIME_ALERT_WEBHOOK_URL` (optional) — Slack/Google-Chat-style incoming webhook. **Setting it is what enables the job.**
+  - `UPTIME_CHECK_URL` (optional) — defaults to the local `http://127.0.0.1:<PORT>/readyz`. Leave it defaulted to catch a process that is up but not READY; point it at the public API URL to also cover DNS/TLS/Cloudflare.
+  - ⬜ Operator: create the webhook (Slack channel or WhatsApp/phone bridge), set it on the Railway service, and **still** provision the EXTERNAL probe (Better Stack on the public `/readyz` + phone escalation) — a dead process cannot alert about itself. `BACKUP_HEARTBEAT_URL` remains the backup dead-man's-switch. Test-fire both after the first deploy.
 - ✅ Stuck-order watchdog (alert path implemented + durable) — ⬜ test-fire in prod
 - ✅ Support codes: `x-request-id` shown on web checkout/order error toasts
 

@@ -12,6 +12,7 @@ import { registerDbBackup } from "../jobs/dbBackup";
 import { registerDriftAudit } from "../jobs/driftAudit";
 import { registerDataPrune } from "../jobs/prune";
 import { registerRefillReminder } from "../jobs/refillReminder";
+import { registerUptimeMonitor } from "../jobs/uptimeMonitor";
 
 /**
  * pg-boss wiring: instance + lifecycle + Phase 1 cron registration.
@@ -99,8 +100,10 @@ export async function registerCronJobs(instance: PgBoss): Promise<void> {
   await registerDataPrune(instance);
   // Batch 3 worker: daily refill-reminder sweep.
   await registerRefillReminder(instance);
+  // Observability worker: 5-minute uptime self-check (no-op unless a webhook is set).
+  await registerUptimeMonitor(instance);
   logger.info(
-    "payment-timeout + invoice-pdf + offer-expiry + notification-fanout + db-backup + drift-audit + data-prune + refill-reminder workers registered",
+    "payment-timeout + invoice-pdf + offer-expiry + notification-fanout + db-backup + drift-audit + data-prune + refill-reminder + uptime-monitor workers registered",
   );
 }
 
