@@ -87,6 +87,13 @@ export function toProductDetail(product: DbProduct): Product {
     composition: product.composition,
     // DB stores Int; ops catalog CRUD only accepts the §6.2 slabs {0,5,12,18}.
     gstRatePct: product.gstRatePct as GstRate,
+    // Structured medical info — empty string means "not documented".
+    uses: product.uses,
+    directions: product.directions,
+    sideEffects: product.sideEffects,
+    storageInfo: product.storageInfo,
+    warnings: product.warnings,
+    manufacturer: product.manufacturer,
   };
 }
 
@@ -108,12 +115,16 @@ export interface ProductListFilters {
   minPricePaise?: number;
   maxPricePaise?: number;
   discounted?: boolean;
+  /** Health-concern id (resolved from the `concern` slug by the route). */
+  concernId?: string;
 }
 
 /** Filters as AND-composed Prisma where parts for the typed-client paths. */
 function filterWhere(f: ProductListFilters): Prisma.ProductWhereInput[] {
   const fields = getPrisma().product.fields;
   const parts: Prisma.ProductWhereInput[] = [];
+  // `some` on the M:N join, not a join+distinct — one product never duplicates.
+  if (f.concernId !== undefined) parts.push({ concerns: { some: { concernId: f.concernId } } });
   if (f.inStock !== undefined) parts.push({ stockQty: f.inStock ? { gt: 0 } : { equals: 0 } });
   if (f.requiresRx !== undefined) parts.push({ requiresRx: f.requiresRx });
   if (f.minPricePaise !== undefined) parts.push({ pricePaise: { gte: f.minPricePaise } });
@@ -127,6 +138,12 @@ function filterWhere(f: ProductListFilters): Prisma.ProductWhereInput[] {
 /** The same filters as raw AND-clauses for the SQL paths. */
 function filterSql(f: ProductListFilters): Prisma.Sql[] {
   const clauses: Prisma.Sql[] = [];
+  if (f.concernId !== undefined) {
+    clauses.push(Prisma.sql`AND EXISTS (
+      SELECT 1 FROM "ProductHealthConcern" phc
+      WHERE phc."productId" = "Product"."id" AND phc."concernId" = ${f.concernId}
+    )`);
+  }
   if (f.inStock !== undefined) {
     clauses.push(f.inStock ? Prisma.sql`AND "stockQty" > 0` : Prisma.sql`AND "stockQty" = 0`);
   }
@@ -165,7 +182,8 @@ function likePrefix(q: string): string {
  * - no `q`, no `sort` → keyset-paginated plain listing (ORDER BY id ASC).
  * - `q` ≥ 3 → pg_trgm word-similarity match over the §6.3 indexed doc.
  * - `q` < 3 → `name ILIKE 'q%'` prefix fallback.
- * Filters compose with category and search on every path. An explicit `sort`
+ * Filters (including `concernId`, joined through `ProductHealthConcern`) compose
+ * with category and search on every path. An explicit `sort`
  * switches to a top-N read (nextCursor null, cursor ignored) and overrides the
  * similarity ordering on the search path.
  */

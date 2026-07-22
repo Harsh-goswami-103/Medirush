@@ -14,18 +14,45 @@ import { enqueuePush } from "../../jobs/notificationFanout";
  * ownership is enforced in the query `where`, so cross-user access is impossible.
  */
 
+/** Consent bucket a notification falls into (NotificationPreference columns). */
+export type NotificationCategory = "order" | "promo" | "refill";
+
+const PREFERENCE_FIELD = {
+  order: "orderUpdates",
+  promo: "promotions",
+  refill: "refillReminders",
+} as const;
+
 export interface NotifyUserInput {
   userId: string;
   type: string;
   title: string;
   body: string;
   data?: Record<string, unknown>;
+  /** Consent bucket checked before pushing; defaults to transactional "order". */
+  category?: NotificationCategory;
+}
+
+/**
+ * Whether a push may be sent for this category. A missing preference row means
+ * the user has never opted out ⇒ all-true. Single indexed lookup on the unique
+ * userId.
+ */
+async function pushAllowed(userId: string, category: NotificationCategory): Promise<boolean> {
+  const row = await getPrisma().notificationPreference.findUnique({
+    where: { userId },
+    select: { orderUpdates: true, promotions: true, refillReminders: true },
+  });
+  return row === null ? true : row[PREFERENCE_FIELD[category]];
 }
 
 /**
  * Persist a Notification for a user and enqueue its push. Best-effort end to
  * end: any failure (write or enqueue) is logged and swallowed so a post-commit
  * caller is never disrupted.
+ *
+ * Consent (DPDP/TRAI) gates the PUSH only — the in-app row is always written so
+ * notification history stays complete even for an opted-out category.
  */
 export async function notifyUser(input: NotifyUserInput): Promise<void> {
   try {
@@ -41,12 +68,14 @@ export async function notifyUser(input: NotifyUserInput): Promise<void> {
       },
     });
 
-    await enqueuePush({
-      userId: input.userId,
-      title: input.title,
-      body: input.body,
-      data: input.data,
-    });
+    if (await pushAllowed(input.userId, input.category ?? "order")) {
+      await enqueuePush({
+        userId: input.userId,
+        title: input.title,
+        body: input.body,
+        data: input.data,
+      });
+    }
   } catch (error) {
     // Notifications are a side-channel to the committed transition — log, never throw.
     logger.error({ err: error, userId: input.userId, type: input.type }, "notifyUser failed");

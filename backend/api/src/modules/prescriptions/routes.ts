@@ -1,11 +1,18 @@
 import { randomUUID } from "node:crypto";
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import {
+  AckResponseSchema,
+  AttachRxBodySchema,
   IdParamsSchema,
+  ListRxQuerySchema,
+  ListRxResponseSchema,
+  LockerPrescriptionResponseSchema,
   OrderStatus,
   Role,
+  RxFileUrlResponseSchema,
   RxStatus,
+  UpdateRxBodySchema,
   UploadPrescriptionResponseSchema,
 } from "@medrush/contracts";
 import { getPrisma } from "../../core/db";
@@ -13,16 +20,30 @@ import { AppError } from "../../core/errors";
 import { validateAndNormalizeUpload } from "../../core/rxProcessing";
 import { putPrivateObject } from "../../core/storage";
 import { requireSyncedAuth } from "../../plugins/auth";
+import {
+  attachPrescriptionToOrder,
+  createLockerPrescription,
+  deleteLockerPrescription,
+  listLockerPrescriptions,
+  presignLockerFile,
+  updateLockerPrescription,
+} from "./service";
 
 /**
- * Prescription upload (BLUEPRINT §7.2, §10.1, §13; phase-2 brief §5):
- * - POST /v1/orders/:id/prescriptions — multipart, CUSTOMER, own order.
+ * Prescription upload + locker (BLUEPRINT §7.2, §10.1, §13; phase-2 brief §5;
+ * Batch 3 locker):
+ * - POST   /v1/orders/:id/prescriptions        — multipart, CUSTOMER, own order.
+ * - GET    /v1/prescriptions                   — own locker, cursor-paginated.
+ * - POST   /v1/prescriptions                   — standalone multipart upload.
+ * - GET    /v1/prescriptions/:id/file          — short-TTL presigned GET.
+ * - PATCH  /v1/prescriptions/:id               — label/patient/doctor, unattached only.
+ * - DELETE /v1/prescriptions/:id               — unattached only.
+ * - POST   /v1/orders/:id/prescriptions/attach — re-use a locker prescription.
  *
  * A single `file` part (≤5MB jpeg/png/pdf) is magic-byte validated and (for
  * images) re-encoded to strip EXIF/GPS, stored to the private bucket under a
- * SERVER-generated key `rx/{orderId}/{cuid}.{ext}` (no client-controlled path),
- * and recorded as a PENDING Prescription. Allowed only while the order still
- * needs a prescription (requiresRx, rxStatus PENDING/REJECTED, not terminal).
+ * SERVER-generated key (no client-controlled path), and recorded as a PENDING
+ * Prescription owned by the uploader.
  */
 
 /** @fastify/multipart raises this when a part exceeds the configured fileSize. */
@@ -35,6 +56,45 @@ function isTooLarge(error: unknown): boolean {
 }
 
 const customerOnly = { roles: [Role.CUSTOMER] };
+
+interface ParsedUpload {
+  buffer: Buffer;
+  mimetype: string;
+  fields: Record<string, string>;
+}
+
+/**
+ * Read the single `file` part plus any text fields. `request.parts()` is used
+ * instead of `request.file()` so form fields are picked up whichever side of
+ * the file part the client puts them on.
+ */
+async function readUpload(request: FastifyRequest): Promise<ParsedUpload> {
+  let buffer: Buffer | null = null;
+  let mimetype = "";
+  const fields: Record<string, string> = {};
+
+  try {
+    for await (const part of request.parts()) {
+      if (part.type === "file") {
+        mimetype = part.mimetype;
+        buffer = await part.toBuffer();
+      } else if (typeof part.value === "string" && part.value.length > 0) {
+        fields[part.fieldname] = part.value;
+      }
+    }
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    if (isTooLarge(error)) {
+      throw new AppError("VALIDATION_ERROR", "File exceeds the 5MB limit", 422);
+    }
+    throw error;
+  }
+
+  if (!buffer) {
+    throw new AppError("VALIDATION_ERROR", "A file part is required", 422);
+  }
+  return { buffer, mimetype, fields };
+}
 
 export const prescriptionRoutes: FastifyPluginAsync = async (app) => {
   const typed = app.withTypeProvider<ZodTypeProvider>();
@@ -108,6 +168,9 @@ export const prescriptionRoutes: FastifyPluginAsync = async (app) => {
 
       const rx = await prisma.prescription.create({
         data: {
+          // Owned by the uploader (Rx locker); the order link stays set because
+          // this route uploads against a specific order.
+          userId,
           orderId,
           fileKey: key,
           mimeType: normalized.contentType,
@@ -126,6 +189,144 @@ export const prescriptionRoutes: FastifyPluginAsync = async (app) => {
           reviewedAt: rx.reviewedAt ? rx.reviewedAt.toISOString() : null,
         },
       };
+    },
+  );
+
+  typed.get(
+    "/prescriptions",
+    {
+      config: customerOnly,
+      schema: {
+        tags: ["prescriptions"],
+        summary: "List the caller's prescriptions (cursor-paginated, newest first)",
+        querystring: ListRxQuerySchema,
+        response: { 200: ListRxResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireSyncedAuth(request);
+      const { cursor, limit, unattached } = request.query;
+      const { items, nextCursor } = await listLockerPrescriptions(userId, {
+        cursor,
+        limit,
+        unattached,
+      });
+      return { data: items, meta: { nextCursor } };
+    },
+  );
+
+  typed.post(
+    "/prescriptions",
+    {
+      config: customerOnly,
+      schema: {
+        tags: ["prescriptions"],
+        summary: "Upload a prescription to the locker (multipart, ≤5MB, no order)",
+        consumes: ["multipart/form-data"],
+        response: { 201: LockerPrescriptionResponseSchema },
+      },
+    },
+    async (request, reply) => {
+      const { userId } = requireSyncedAuth(request);
+      const { buffer, mimetype, fields } = await readUpload(request);
+
+      // The optional form fields are exactly the PATCH surface.
+      const parsed = UpdateRxBodySchema.safeParse(fields);
+      if (!parsed.success) {
+        throw new AppError(
+          "VALIDATION_ERROR",
+          "Invalid prescription fields",
+          422,
+          parsed.error.issues,
+        );
+      }
+
+      const data = await createLockerPrescription(userId, {
+        buffer,
+        mimetype,
+        label: parsed.data.label,
+        patientId: parsed.data.patientId,
+        doctorName: parsed.data.doctorName,
+      });
+
+      reply.code(201);
+      return { data };
+    },
+  );
+
+  typed.get(
+    "/prescriptions/:id/file",
+    {
+      config: customerOnly,
+      schema: {
+        tags: ["prescriptions"],
+        summary: "Short-lived presigned URL for the caller's own prescription file",
+        params: IdParamsSchema,
+        response: { 200: RxFileUrlResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireSyncedAuth(request);
+      return { data: await presignLockerFile(userId, request.params.id) };
+    },
+  );
+
+  typed.patch(
+    "/prescriptions/:id",
+    {
+      config: customerOnly,
+      schema: {
+        tags: ["prescriptions"],
+        summary: "Edit an unattached prescription's label / patient / doctor",
+        params: IdParamsSchema,
+        body: UpdateRxBodySchema,
+        response: { 200: LockerPrescriptionResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireSyncedAuth(request);
+      return { data: await updateLockerPrescription(userId, request.params.id, request.body) };
+    },
+  );
+
+  typed.delete(
+    "/prescriptions/:id",
+    {
+      config: customerOnly,
+      schema: {
+        tags: ["prescriptions"],
+        summary: "Delete an unattached prescription from the locker",
+        params: IdParamsSchema,
+        response: { 200: AckResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireSyncedAuth(request);
+      await deleteLockerPrescription(userId, request.params.id);
+      return { data: { ok: true as const } };
+    },
+  );
+
+  typed.post(
+    "/orders/:id/prescriptions/attach",
+    {
+      config: customerOnly,
+      schema: {
+        tags: ["orders"],
+        summary: "Attach an unattached locker prescription to an order that needs one",
+        params: IdParamsSchema,
+        body: AttachRxBodySchema,
+        response: { 200: LockerPrescriptionResponseSchema },
+      },
+    },
+    async (request) => {
+      const { userId } = requireSyncedAuth(request);
+      const data = await attachPrescriptionToOrder(
+        userId,
+        request.params.id,
+        request.body.prescriptionId,
+      );
+      return { data };
     },
   );
 };

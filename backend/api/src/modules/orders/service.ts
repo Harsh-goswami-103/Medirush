@@ -124,6 +124,9 @@ interface MappableOrder {
   couponCode: string | null;
   deliveryNote: string | null;
   contactless: boolean;
+  patientId: string | null;
+  /** Joined when the query includes `patient`; absent on lighter selects. */
+  patient?: { name: string } | null;
   requiresRx: boolean;
   rxStatus: RxStatus;
   deliveryOtp: string | null;
@@ -172,6 +175,8 @@ function baseOrder(order: MappableOrder, isOwner: boolean): Order {
     couponCode: order.couponCode,
     deliveryNote: order.deliveryNote,
     contactless: order.contactless,
+    patientId: order.patientId,
+    patientName: order.patient?.name ?? null,
     requiresRx: order.requiresRx,
     rxStatus: order.rxStatus,
     // Non-null only for the owning customer once READY (OTP is set at READY).
@@ -250,6 +255,7 @@ const detailInclude = {
   items: { orderBy: { id: "asc" } },
   events: { orderBy: { createdAt: "asc" } },
   prescriptions: { orderBy: { createdAt: "asc" } },
+  patient: { select: { name: true } },
   delivery: {
     include: { driver: { include: { user: { select: { name: true, phone: true } } } } },
   },
@@ -282,6 +288,8 @@ interface CheckoutContext {
   cart: { id: string };
   deliveryNote: string | null;
   contactless: boolean;
+  patientId: string | null;
+  patientName: string | null;
 }
 
 /**
@@ -306,6 +314,17 @@ async function prepareCheckout(userId: string, body: CreateOrderInput): Promise<
   const address = await prisma.address.findUnique({ where: { id: body.addressId } });
   if (!address || address.userId !== userId) {
     throw new AppError("NOT_FOUND", "Delivery address not found", 404);
+  }
+
+  // 2b) Optional dependent profile — must belong to the caller (404 rather
+  // than 403 so a stranger's profile id is indistinguishable from a typo).
+  let patient: { id: string; name: string } | null = null;
+  if (body.patientId !== undefined) {
+    const row = await prisma.patient.findUnique({ where: { id: body.patientId } });
+    if (!row || row.userId !== userId) {
+      throw new AppError("NOT_FOUND", "Patient profile not found", 404);
+    }
+    patient = { id: row.id, name: row.name };
   }
   const distanceM = haversineM(
     { lat: storeConfig.lat, lng: storeConfig.lng },
@@ -392,6 +411,8 @@ async function prepareCheckout(userId: string, body: CreateOrderInput): Promise<
     // Already trimmed + length-bounded by the contract; absent → null/false.
     deliveryNote: body.deliveryNote ?? null,
     contactless: body.contactless ?? false,
+    patientId: patient ? patient.id : null,
+    patientName: patient ? patient.name : null,
   };
 }
 
@@ -402,7 +423,7 @@ async function prepareCheckout(userId: string, body: CreateOrderInput): Promise<
 async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<CreateOrderResult> {
   const prisma = getPrisma();
   const { storeConfig, address, distanceM, lineItems, totals, requiresRx, couponRow, cart } = ctx;
-  const { deliveryNote, contactless } = ctx;
+  const { deliveryNote, contactless, patientId } = ctx;
 
   // 6) COD gates (§10.3) then velocity rule (§10.3). These pre-TX checks are a
   // fast-fail optimisation only — the authoritative re-check runs INSIDE the
@@ -477,6 +498,7 @@ async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<Cre
           couponCode: couponRow ? couponRow.code : null,
           deliveryNote,
           contactless,
+          patientId,
           requiresRx,
           rxStatus,
           placedAt: now,
@@ -576,7 +598,7 @@ async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<Cre
 async function createPrepaidOrder(userId: string, ctx: CheckoutContext): Promise<CreateOrderResult> {
   const prisma = getPrisma();
   const { address, distanceM, lineItems, totals, requiresRx, couponRow, cart } = ctx;
-  const { deliveryNote, contactless } = ctx;
+  const { deliveryNote, contactless, patientId } = ctx;
 
   // Velocity rule (§10.3) — applies to every checkout, prepaid included. Fast
   // fail only; the authoritative re-check runs in-TX (assertFraudGatesInTx).
@@ -628,6 +650,7 @@ async function createPrepaidOrder(userId: string, ctx: CheckoutContext): Promise
           couponCode: couponRow ? couponRow.code : null,
           deliveryNote,
           contactless,
+          patientId,
           requiresRx,
           rxStatus: requiresRx ? RxStatus.PENDING : RxStatus.NA,
           // placedAt stays null until payment.captured promotes the order.
@@ -751,6 +774,8 @@ export interface CreateOrderInput {
   couponCode?: string;
   deliveryNote?: string;
   contactless?: boolean;
+  /** Dependent profile the order is for; validated against the caller. */
+  patientId?: string;
 }
 
 /* ------------------------------------------------------------- COD + fraud */
@@ -891,6 +916,12 @@ export async function validateCoupon(
   const prisma = getPrisma();
   const coupon = await prisma.coupon.findUnique({ where: { code } });
   if (!coupon || !coupon.isActive) {
+    throw new AppError("COUPON_INVALID", "This coupon is not valid", 422);
+  }
+  // Personal coupons (referral reward / welcome offer) are bound to one
+  // account. Same message as "not valid" so a code can't be probed for
+  // existence by a stranger.
+  if (coupon.userId !== null && coupon.userId !== userId) {
     throw new AppError("COUPON_INVALID", "This coupon is not valid", 422);
   }
   const now = new Date();
@@ -1221,7 +1252,7 @@ export async function cancelOrder(
 async function loadOrder(id: string, viewerUserId: string): Promise<Order> {
   const order = await getPrisma().order.findUniqueOrThrow({
     where: { id },
-    include: { items: { orderBy: { id: "asc" } } },
+    include: { items: { orderBy: { id: "asc" } }, patient: { select: { name: true } } },
   });
   return baseOrder(order, order.userId === viewerUserId);
 }

@@ -12,11 +12,21 @@ import { validateCoupon } from "../orders/service";
  * order create runs (§9.2), so a quote always matches what checkout charges.
  */
 
-/** Active, `isPublic`, in-window coupons — soonest-expiring first. */
+/**
+ * Active, `isPublic`, in-window coupons — soonest-expiring first.
+ * `userId: null` keeps personal coupons (referral/welcome) off the shared
+ * offers surface even if one were ever flagged public by mistake.
+ */
 export async function listPublicCoupons(): Promise<PublicCoupon[]> {
   const now = new Date();
   const rows = await getPrisma().coupon.findMany({
-    where: { isActive: true, isPublic: true, startsAt: { lte: now }, endsAt: { gte: now } },
+    where: {
+      isActive: true,
+      isPublic: true,
+      userId: null,
+      startsAt: { lte: now },
+      endsAt: { gte: now },
+    },
     orderBy: { endsAt: "asc" },
   });
   return rows.map((row) => ({

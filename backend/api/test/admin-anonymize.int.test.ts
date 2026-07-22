@@ -130,6 +130,7 @@ describe("POST /v1/admin/users/:id/anonymize", () => {
     });
     await prisma.prescription.create({
       data: {
+        userId: order.userId,
         orderId: order.id,
         fileKey: "rx/keep-me.jpg",
         mimeType: "image/jpeg",

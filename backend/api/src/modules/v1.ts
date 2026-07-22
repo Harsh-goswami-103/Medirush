@@ -20,6 +20,12 @@ import { adminFleetRoutes } from "./admin/fleetRoutes";
 import { adminMarketingRoutes } from "./admin/marketingRoutes";
 import { opsAlertRoutes } from "./alerts/routes";
 import { dispatchOpsRoutes } from "./dispatch/opsRoutes";
+import { feedbackRoutes } from "./feedback/routes";
+import { patientRoutes } from "./patients/routes";
+import { preferenceRoutes } from "./preferences/routes";
+import { referralRoutes } from "./referrals/routes";
+import { refillRoutes } from "./refills/routes";
+import { wishlistRoutes } from "./wishlist/routes";
 
 /**
  * /v1 module root — registered with `{ prefix: "/v1" }` in app.ts.
@@ -54,4 +60,13 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
   await app.register(adminAuditRoutes);
   // Feature-gap Batch 2 — customer offers surface + coupon apply-preview
   await app.register(couponRoutes);
+
+  // Batch 3 — ratings/returns, dependent profiles, consent + erasure,
+  // referrals, refill reminders, wishlist.
+  await app.register(feedbackRoutes);
+  await app.register(patientRoutes);
+  await app.register(preferenceRoutes);
+  await app.register(referralRoutes);
+  await app.register(refillRoutes);
+  await app.register(wishlistRoutes);
 };
