@@ -112,6 +112,8 @@ describe("order create", () => {
       discountPaise: 0,
       totalPaise: 26_900,
       couponCode: null,
+      deliveryNote: null,
+      contactless: false,
       requiresRx: false,
       rxStatus: "NA",
       deliveryOtp: null,
@@ -140,6 +142,7 @@ describe("order create", () => {
       events: [],
       prescriptions: [],
       driver: null,
+      refund: null,
     };
 
     expect(CreateOrderResponseSchema.safeParse({ data: { order } }).success).toBe(true);
