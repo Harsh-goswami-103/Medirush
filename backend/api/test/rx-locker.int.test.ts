@@ -549,7 +549,7 @@ describe("DELETE /v1/prescriptions/:id", () => {
 });
 
 describe("POST /v1/orders/:id/prescriptions/attach", () => {
-  it("attaches an unattached locker prescription to an own Rx order", async () => {
+  it("records a PENDING dispensing and leaves the document re-usable", async () => {
     const owner = await user("CUSTOMER");
     const order = await makeRxOrder(owner.id);
     const rx = await seedRx(owner.id, { label: "Chronic" });
@@ -561,29 +561,93 @@ describe("POST /v1/orders/:id/prescriptions/attach", () => {
       payload: { prescriptionId: rx.id },
     });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().data.orderId).toBe(order.id);
-    expect(res.json().data.orderNo).toBe(order.orderNo);
 
-    expect((await prisma.prescription.findUnique({ where: { id: rx.id } }))?.orderId).toBe(order.id);
-    // Mirrors the order-scoped upload: only the pharmacist review flips rxStatus.
+    const dispensing = await prisma.orderPrescription.findFirstOrThrow({
+      where: { orderId: order.id, prescriptionId: rx.id },
+    });
+    expect(dispensing.status).toBe("PENDING");
+    expect(dispensing.reviewedAt).toBeNull();
+    // Only the pharmacist review flips the order's rxStatus.
     expect((await prisma.order.findUnique({ where: { id: order.id } }))?.rxStatus).toBe("PENDING");
   });
 
-  it("409s when the prescription is already attached", async () => {
+  it("re-uses one prescription across several orders, each needing its own review", async () => {
+    // The whole point of the locker: a chronic patient uploads once. Each order
+    // still gets its own dispensing row for the pharmacist to adjudicate.
     const owner = await user("CUSTOMER");
     const first = await makeRxOrder(owner.id);
     const second = await makeRxOrder(owner.id);
-    const rx = await seedRx(owner.id, { orderId: first.id });
+    const rx = await seedRx(owner.id);
 
+    for (const order of [first, second]) {
+      const res = await app.inject({
+        method: "POST",
+        url: `/v1/orders/${order.id}/prescriptions/attach`,
+        headers: authHeaders(owner),
+        payload: { prescriptionId: rx.id },
+      });
+      expect(res.statusCode, res.body).toBe(200);
+    }
+
+    const dispensings = await prisma.orderPrescription.findMany({
+      where: { prescriptionId: rx.id },
+    });
+    expect(dispensings).toHaveLength(2);
+    expect(dispensings.every((d) => d.status === "PENDING")).toBe(true);
+  });
+
+  it("does not let a previous APPROVAL carry over to a new order", async () => {
+    // The compliance property: a pharmacist authorises a SPECIFIC dispensing.
+    // Re-using an approved prescription must not silently authorise the next
+    // order — it starts PENDING and goes back through review.
+    const owner = await user("CUSTOMER");
+    const approvedOrder = await makeRxOrder(owner.id);
+    const rx = await seedRx(owner.id, { status: "APPROVED" });
+    await prisma.orderPrescription.create({
+      data: {
+        orderId: approvedOrder.id,
+        prescriptionId: rx.id,
+        status: "APPROVED",
+        reviewedAt: new Date(),
+      },
+    });
+
+    const nextOrder = await makeRxOrder(owner.id);
     const res = await app.inject({
       method: "POST",
-      url: `/v1/orders/${second.id}/prescriptions/attach`,
+      url: `/v1/orders/${nextOrder.id}/prescriptions/attach`,
       headers: authHeaders(owner),
       payload: { prescriptionId: rx.id },
     });
-    expect(res.statusCode, res.body).toBe(409);
-    expect(res.json().error.code).toBe("CONFLICT");
-    expect((await prisma.prescription.findUnique({ where: { id: rx.id } }))?.orderId).toBe(first.id);
+    expect(res.statusCode, res.body).toBe(200);
+
+    const fresh = await prisma.orderPrescription.findFirstOrThrow({
+      where: { orderId: nextOrder.id, prescriptionId: rx.id },
+    });
+    expect(fresh.status).toBe("PENDING");
+    expect(fresh.reviewedAt).toBeNull();
+    expect((await prisma.order.findUnique({ where: { id: nextOrder.id } }))?.rxStatus).toBe(
+      "PENDING",
+    );
+  });
+
+  it("409s when the same prescription is attached to the same order twice", async () => {
+    const owner = await user("CUSTOMER");
+    const order = await makeRxOrder(owner.id);
+    const rx = await seedRx(owner.id);
+    const attach = () =>
+      app.inject({
+        method: "POST",
+        url: `/v1/orders/${order.id}/prescriptions/attach`,
+        headers: authHeaders(owner),
+        payload: { prescriptionId: rx.id },
+      });
+
+    expect((await attach()).statusCode).toBe(200);
+    const again = await attach();
+    expect(again.statusCode, again.body).toBe(409);
+    expect(again.json().error.code).toBe("CONFLICT");
+    expect(await prisma.orderPrescription.count({ where: { prescriptionId: rx.id } })).toBe(1);
   });
 
   it("422s when the order does not require a prescription", async () => {
@@ -603,7 +667,7 @@ describe("POST /v1/orders/:id/prescriptions/attach", () => {
     });
     expect(res.statusCode, res.body).toBe(422);
     expect(res.json().error.code).toBe("VALIDATION_ERROR");
-    expect((await prisma.prescription.findUnique({ where: { id: rx.id } }))?.orderId).toBeNull();
+    expect(await prisma.orderPrescription.count({ where: { prescriptionId: rx.id } })).toBe(0);
   });
 
   it("409s when the order is terminal", async () => {

@@ -419,6 +419,7 @@ model Order {
   items           OrderItem[]
   events          OrderEvent[]
   prescriptions   Prescription[]
+  dispensings     OrderPrescription[]
   delivery        Delivery?
   payment         Payment?
   rating          Rating?
@@ -468,11 +469,41 @@ model OrderEvent {                                 // append-only audit trail
   @@index([orderId, createdAt])
 }
 
+/**
+ * One dispensing of one prescription against one order.
+ *
+ * The review verdict lives HERE, not on the Prescription document. A
+ * pharmacist authorises a specific dispensing — a prescription for ten tablets
+ * does not license unlimited repeats, and Schedule H1 wants a register entry
+ * per dispensing — so re-using a locker prescription on a new order creates a
+ * fresh PENDING row that must be reviewed again. The locker spares the
+ * customer a re-upload; it must never spare the pharmacist a re-check.
+ */
+model OrderPrescription {
+  id             String       @id @default(cuid())
+  orderId        String
+  order          Order        @relation(fields: [orderId], references: [id])
+  prescriptionId String
+  prescription   Prescription @relation(fields: [prescriptionId], references: [id])
+  status         RxStatus     @default(PENDING)
+  reviewerId     String?
+  reviewNote     String?
+  /** Captured per dispensing for the Schedule H1 register. */
+  patientName    String?
+  doctorName     String?
+  reviewedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  @@unique([orderId, prescriptionId])
+  @@index([prescriptionId])
+  @@index([orderId, status])
+}
+
 model Prescription {
   /**
-   * Rx locker: a prescription belongs to a USER and may be re-used across
-   * orders, so `orderId` is nullable (null = sits in the locker, uploaded
-   * ahead of / independently of any order).
+   * Rx locker document. `orderId` is the LEGACY single link, retained so
+   * existing rows and queries keep working; new dispensings are recorded on
+   * OrderPrescription. `status` here is the last-known outcome for display in
+   * the locker only — it authorises nothing.
    */
   id           String   @id @default(cuid())
   userId       String
@@ -491,6 +522,7 @@ model Prescription {
   reviewNote   String?
   createdAt    DateTime @default(now())
   reviewedAt   DateTime?
+  dispensings  OrderPrescription[]
   @@index([orderId])                              // FK lookup (Postgres does not auto-index FKs)
   @@index([userId, createdAt])
 }
