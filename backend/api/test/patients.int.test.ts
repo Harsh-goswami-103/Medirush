@@ -18,6 +18,29 @@ const { clearAuthCaches } = await import("../src/plugins/auth");
 const { patientRoutes } = await import("../src/modules/patients/routes");
 const { setupTestDb } = await import("./helpers/db");
 const { appSettings, storeConfig, user } = await import("./helpers/factories");
+
+/**
+ * "Tomorrow" in ASIA/KOLKATA, not in UTC.
+ *
+ * `toDobDate()` (modules/patients/service.ts) compares the submitted date
+ * against the IST calendar day, which is right for an Indian pharmacy. Deriving
+ * the fixture from UTC instead made these cases fail for 5.5 hours out of every
+ * 24: between 18:30 and 00:00 UTC, IST is already on the next date, so
+ * `utcNow + 1 day` IS the IST today and the server correctly accepted it. The
+ * test was wrong, not the product — the same UTC/IST boundary that invoice
+ * numbering has to get right.
+ */
+const IST_DATE = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Kolkata",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+function istTomorrow(): string {
+  return IST_DATE.format(new Date(Date.now() + 86_400_000));
+}
+
 const { authHeaders } = await import("./helpers/auth");
 
 type App = Awaited<ReturnType<typeof buildApp>>;
@@ -130,7 +153,7 @@ describe("POST /v1/patients", () => {
 
   it("rejects a future dob with 422 VALIDATION_ERROR", async () => {
     const { headers } = await customer();
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    const tomorrow = istTomorrow();
 
     const res = await createPatient(headers, { name: "Future", relation: "OTHER", dob: tomorrow });
     expect(res.statusCode, res.body).toBe(422);
@@ -256,7 +279,7 @@ describe("PATCH /v1/patients/:id", () => {
   it("rejects a future dob with 422 and leaves the row untouched", async () => {
     const { headers } = await customer();
     const created = await seedPatient(headers, { name: "Asha", relation: "PARENT" });
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    const tomorrow = istTomorrow();
 
     const res = await app.inject({
       method: "PATCH",
