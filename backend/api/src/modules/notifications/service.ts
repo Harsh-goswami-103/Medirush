@@ -34,11 +34,34 @@ export interface NotifyUserInput {
 }
 
 /**
- * Whether a push may be sent for this category. A missing preference row means
- * the user has never opted out ⇒ all-true. Single indexed lookup on the unique
- * userId.
+ * Notification types that ALWAYS push, whatever `orderUpdates` says. A customer
+ * cannot opt out of safety- and money-critical notices about a live order: an
+ * Rx rejection (the medicine is NOT coming), a cancellation, a refund, the
+ * courier arriving/handing over, and the handover OTP. Everything else —
+ * ORDER_PLACED, ORDER_READY, ORDER_RX_APPROVED, driver-side assignment chatter,
+ * payouts — honours the toggle, as do the promo/refill buckets.
  */
-async function pushAllowed(userId: string, category: NotificationCategory): Promise<boolean> {
+const ALWAYS_PUSH_TYPES: ReadonlySet<string> = new Set([
+  "ORDER_RX_REJECTED",
+  "ORDER_CANCELLED",
+  "ORDER_REFUNDED",
+  "ORDER_PICKED_UP",
+  "ORDER_DELIVERED",
+  "ORDER_OTP",
+]);
+
+/**
+ * Whether a push may be sent. Delivery-critical types bypass consent entirely
+ * (see ALWAYS_PUSH_TYPES); otherwise the category's own toggle decides. A
+ * missing preference row means the user has never opted out ⇒ all-true. Single
+ * indexed lookup on the unique userId.
+ */
+async function pushAllowed(
+  userId: string,
+  category: NotificationCategory,
+  type: string,
+): Promise<boolean> {
+  if (category === "order" && ALWAYS_PUSH_TYPES.has(type)) return true;
   const row = await getPrisma().notificationPreference.findUnique({
     where: { userId },
     select: { orderUpdates: true, promotions: true, refillReminders: true },
@@ -52,7 +75,9 @@ async function pushAllowed(userId: string, category: NotificationCategory): Prom
  * caller is never disrupted.
  *
  * Consent (DPDP/TRAI) gates the PUSH only — the in-app row is always written so
- * notification history stays complete even for an opted-out category.
+ * notification history stays complete even for an opted-out category. Callers
+ * MUST pass `category` for marketing ("promo") and refill ("refill") sends;
+ * omitting it means transactional "order".
  */
 export async function notifyUser(input: NotifyUserInput): Promise<void> {
   try {
@@ -68,7 +93,7 @@ export async function notifyUser(input: NotifyUserInput): Promise<void> {
       },
     });
 
-    if (await pushAllowed(input.userId, input.category ?? "order")) {
+    if (await pushAllowed(input.userId, input.category ?? "order", input.type)) {
       await enqueuePush({
         userId: input.userId,
         title: input.title,

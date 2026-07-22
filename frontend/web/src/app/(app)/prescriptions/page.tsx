@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { RX_MAX_UPLOAD_BYTES } from "@medrush/contracts";
 import type {
   LockerPrescription,
   Patient,
@@ -24,8 +25,9 @@ import { Field, Select, TextInput } from "@/components/kit";
 import { Modal } from "@/components/modal";
 
 const PATIENTS_KEY = ["patients"] as const;
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const ACCEPTED = "image/*,application/pdf";
+/** Single source of truth with the server's multipart fileSize cap. */
+const MAX_UPLOAD_MB = Math.floor(RX_MAX_UPLOAD_BYTES / (1024 * 1024));
 
 const RX_LABEL: Record<RxStatus, string> = {
   NA: "Not reviewed yet",
@@ -115,6 +117,14 @@ export default function PrescriptionLockerPage() {
 
   const items = listQuery.data?.pages.flatMap((p) => p.data) ?? [];
 
+  const listStatusMessage = listQuery.isError
+    ? "Could not load your prescriptions"
+    : listQuery.isLoading
+      ? "Loading your prescriptions"
+      : items.length === 0
+        ? "No prescriptions"
+        : `${items.length} ${items.length === 1 ? "prescription" : "prescriptions"}`;
+
   return (
     <div className="min-h-dvh bg-mesh pb-28">
       <header className="sticky top-0 z-30 flex items-center gap-2 border-b border-line bg-surface/90 px-4 py-3 backdrop-blur">
@@ -186,7 +196,13 @@ export default function PrescriptionLockerPage() {
           })}
         </div>
 
-        <div aria-live="polite">
+        {/* Only a short summary is announced — a live region around the whole
+            list would make a screen reader re-read every card on any change. */}
+        <p className="sr-only" role="status" aria-live="polite">
+          {listStatusMessage}
+        </p>
+
+        <div aria-busy={listQuery.isPending || listQuery.isFetching}>
           {listQuery.isError ? (
             <ErrorState
               message={(listQuery.error as Error).message}
@@ -505,8 +521,11 @@ function UploadModal({
     const picked = e.target.files?.[0];
     e.target.value = ""; // allow re-selecting the same file
     if (!picked) return;
-    if (picked.size > MAX_UPLOAD_BYTES) {
-      toast.push({ type: "error", message: "That file is over 10 MB — please pick a smaller one" });
+    if (picked.size > RX_MAX_UPLOAD_BYTES) {
+      toast.push({
+        type: "error",
+        message: `That file is over ${MAX_UPLOAD_MB} MB — please pick a smaller one`,
+      });
       return;
     }
     setFile(picked);
@@ -550,7 +569,9 @@ function UploadModal({
           <span className="text-sm font-semibold text-primary-800">
             {file ? "Choose a different file" : "Choose a photo or PDF"}
           </span>
-          <span className="text-xs text-ink-600">Up to 10 MB · JPG, PNG or PDF</span>
+          <span className="text-xs text-ink-600">
+            Up to {MAX_UPLOAD_MB} MB · JPG, PNG or PDF
+          </span>
         </button>
         <input
           ref={fileRef}

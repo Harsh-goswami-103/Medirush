@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReferralReward, ReferralSummary } from "@medrush/contracts";
-import { api, apiErrorMessage } from "@/lib/api";
+import { api, apiErrorMessage, type Envelope } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { cn } from "@/lib/cn";
 import { formatPaise } from "@/lib/format";
@@ -68,6 +68,19 @@ function GiftIcon({ className }: { className?: string }) {
   );
 }
 
+const REFERRALS_KEY = ["referrals"];
+
+/**
+ * Has the caller already been referred by someone else? The summary carries no
+ * explicit flag, but the welcome coupon minted at attribution time is the only
+ * personal coupon the API describes as a welcome offer — the referrer-side
+ * rewards read "referral reward". Used only to hide the apply form; the
+ * endpoint itself is the authority (409 when a code was already applied).
+ */
+function hasAppliedReferral(summary: ReferralSummary): boolean {
+  return summary.rewards.some((reward) => /welcome/i.test(reward.description ?? ""));
+}
+
 /** Refer &amp; earn — GET /v1/referrals (code, funnel counts, earned coupons). */
 export default function ReferralsPage() {
   const router = useRouter();
@@ -79,7 +92,7 @@ export default function ReferralsPage() {
   }, [loading, user, router]);
 
   const referralQuery = useQuery({
-    queryKey: ["referrals"],
+    queryKey: REFERRALS_KEY,
     queryFn: () => api.get<ReferralSummary>("/v1/referrals"),
     enabled: Boolean(user),
     staleTime: 60_000,
@@ -198,7 +211,13 @@ export default function ReferralsPage() {
               </div>
             </Reveal>
 
-            <Reveal as="section" delayMs={60}>
+            {!hasAppliedReferral(summary) ? (
+              <Reveal as="section" delayMs={60}>
+                <ApplyReferralForm rewardPaise={summary.refereeRewardPaise} />
+              </Reveal>
+            ) : null}
+
+            <Reveal as="section" delayMs={120}>
               <ul className="grid grid-cols-3 gap-2">
                 <StatTile label="Friends joined" value={<CountUp to={summary.signedUp} />} />
                 <StatTile label="Rewards unlocked" value={<CountUp to={summary.rewarded} />} />
@@ -209,7 +228,7 @@ export default function ReferralsPage() {
               </ul>
             </Reveal>
 
-            <Reveal as="section" delayMs={120}>
+            <Reveal as="section" delayMs={180}>
               <h2 className="mb-2 text-sm font-semibold text-ink-900">Your rewards</h2>
               {summary.rewards.length === 0 ? (
                 <div className="rounded-xl2 border border-dashed border-line bg-surface/70 px-4 py-8 text-center">
@@ -237,7 +256,7 @@ export default function ReferralsPage() {
               )}
             </Reveal>
 
-            <Reveal as="section" delayMs={180}>
+            <Reveal as="section" delayMs={240}>
               <div className="glass rounded-xl2 p-4 shadow-glass">
                 <h2 className="text-sm font-semibold text-ink-900">How it works</h2>
                 <ol className="mt-3 space-y-3">
@@ -279,6 +298,104 @@ export default function ReferralsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Referee entry point — POST /v1/referrals/apply. Without this the programme
+ * never fires: nothing else in the app attributes a referral or mints the
+ * welcome coupon. The endpoint's own messages are surfaced verbatim (404
+ * unknown code, 422 own code / already ordered, 409 already referred).
+ */
+function ApplyReferralForm({ rewardPaise }: { rewardPaise: number }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [code, setCode] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const apply = useMutation({
+    mutationFn: (value: string) =>
+      api.post<ReferralSummary>("/v1/referrals/apply", { code: value }),
+    onSuccess: (result) => {
+      // The endpoint returns the fresh summary — seed it so the welcome coupon
+      // (and this form disappearing) land without a second round-trip.
+      qc.setQueryData<Envelope<ReferralSummary>>(REFERRALS_KEY, result);
+      setCode("");
+      setError(null);
+      toast.push({ type: "success", message: "Referral applied — your welcome coupon is ready" });
+    },
+    onError: (err) => {
+      setError(apiErrorMessage(err, "Could not apply that code — please try again"));
+      // 409 means someone already applied a code to this account; the refreshed
+      // summary carries the welcome coupon that hides this form.
+      void qc.invalidateQueries({ queryKey: REFERRALS_KEY });
+    },
+  });
+
+  const trimmed = code.trim();
+  const tooShort = trimmed.length > 0 && trimmed.length < 4;
+
+  function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (apply.isPending) return;
+    if (trimmed.length < 4) {
+      setError("Enter the code your friend shared with you");
+      return;
+    }
+    setError(null);
+    apply.mutate(trimmed.toUpperCase());
+  }
+
+  return (
+    <form onSubmit={onSubmit} className="glass rounded-xl2 p-4 shadow-glass" noValidate>
+      <h2 className="text-sm font-semibold text-ink-900">Have a referral code?</h2>
+      <p className="mt-0.5 text-sm text-ink-600">
+        Enter a friend&apos;s code before your first order to get {formatPaise(rewardPaise)} off.
+      </p>
+
+      <div className="mt-3 flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <label htmlFor="referral-code" className="sr-only">
+            Referral code
+          </label>
+          <input
+            id="referral-code"
+            name="referral-code"
+            value={code}
+            onChange={(e) => {
+              setCode(e.target.value.toUpperCase());
+              setError(null);
+            }}
+            placeholder="MRABC123"
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            maxLength={32}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? "referral-code-error" : undefined}
+            className="min-h-11 w-full rounded-input border border-line bg-surface px-3 font-mono text-sm font-semibold uppercase tracking-wide text-ink-900 placeholder:font-sans placeholder:font-normal placeholder:tracking-normal placeholder:text-ink-400 focus:border-primary-600 focus:outline-none"
+          />
+        </div>
+        <button
+          type="submit"
+          disabled={apply.isPending || trimmed.length === 0 || tooShort}
+          className="press inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-input bg-primary-700 px-4 text-sm font-semibold text-white shadow-card2 disabled:opacity-50"
+        >
+          {apply.isPending ? <Spinner className="h-4 w-4" /> : null}
+          Apply
+        </button>
+      </div>
+
+      {error ? (
+        <p id="referral-code-error" role="alert" className="mt-2 text-sm text-danger">
+          {error}
+        </p>
+      ) : (
+        <p className="mt-2 text-xs text-ink-400">
+          One code per new customer, usable only before your first order.
+        </p>
+      )}
+    </form>
   );
 }
 

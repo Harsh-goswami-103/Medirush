@@ -10,9 +10,9 @@ import type {
   RefillReminder,
   StockAlertStatus,
   ToggleWishlistBody,
-  WishlistEntry,
   WishlistStatus,
 } from "@medrush/contracts";
+import type { Envelope } from "@/lib/api";
 import { api, ApiError, qs } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useCart } from "@/lib/cart";
@@ -25,6 +25,9 @@ import { Reveal } from "@/components/motion";
 import { useToast } from "@/components/toast";
 
 const REFILL_INTERVALS = [30, 60, 90] as const;
+
+const SHEET_FOCUSABLE =
+  'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
 
 export default function ProductDetailPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = use(params);
@@ -76,25 +79,19 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
     onError: () => toast.push({ type: "error", message: "Couldn't update the alert — try again" }),
   });
 
-  // Wishlist status. There is no per-product status endpoint, so page through the
-  // owner-scoped list (bounded) and look for this product.
+  // Wishlist status — the batch endpoint, asked for this one product. The key is
+  // namespaced under "one" so it can never collide with the shop grid's batch
+  // entries (["wishlist-status", "batch", ids]), which cache a different payload;
+  // both stay under the "wishlist-status" prefix so one invalidation covers all.
+  const wishlistStatusKey = ["wishlist-status", "one", productId] as const;
   const wishlistQuery = useQuery({
-    queryKey: ["wishlist-status", productId],
-    queryFn: async () => {
-      let cursor: string | undefined;
-      for (let page = 0; page < 5; page += 1) {
-        const res = await api.get<WishlistEntry[]>(`/v1/wishlist${qs({ cursor, limit: 50 })}`);
-        if (res.data.some((e) => e.product.id === productId)) return true;
-        const next = res.meta?.nextCursor;
-        if (!next) break;
-        cursor = next;
-      }
-      return false;
-    },
+    queryKey: wishlistStatusKey,
+    queryFn: () =>
+      api.get<WishlistStatus[]>(`/v1/wishlist/status${qs({ productIds: productId })}`),
     enabled: Boolean(user && productId),
     staleTime: 30_000,
   });
-  const wishlisted = wishlistQuery.data ?? false;
+  const wishlisted = wishlistQuery.data?.data[0]?.wishlisted ?? false;
 
   const toggleWishlist = useMutation({
     mutationFn: (next: boolean) =>
@@ -102,8 +99,10 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
         ? api.post<WishlistStatus>("/v1/wishlist", { productId } satisfies ToggleWishlistBody)
         : api.del<WishlistStatus>(`/v1/wishlist/${productId}`),
     onSuccess: (res) => {
-      qc.setQueryData(["wishlist-status", productId], res.data.wishlisted);
+      // Cache the envelope shape the status endpoint returns, not a bare boolean.
+      qc.setQueryData<Envelope<WishlistStatus[]>>(wishlistStatusKey, { data: [res.data] });
       void qc.invalidateQueries({ queryKey: ["wishlist"] });
+      void qc.invalidateQueries({ queryKey: ["wishlist-status"] });
       toast.push({
         type: "success",
         message: res.data.wishlisted ? "Saved to your wishlist" : "Removed from your wishlist",
@@ -424,7 +423,9 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
         {/* Out of stock → back-in-stock alert (signed-in) or sign-in nudge. */}
         {product.inStock === false && (
           <div className="mt-3 rounded-xl2 border border-warning/30 bg-warning/5 px-4 py-3.5 shadow-card2">
-            <p className="text-sm font-semibold text-warning">Currently out of stock</p>
+            {/* Amber TEXT is darkened to #B45309 — the #D97706 warning token only
+                clears ~2.9:1 on this tint, below the 4.5:1 floor. */}
+            <p className="text-sm font-semibold text-[#B45309]">Currently out of stock</p>
             {user ? (
               <Button
                 variant="secondary"
@@ -468,7 +469,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
         {/* Safety-critical warnings are never collapsed (§17 PDP). */}
         {product.warnings.trim().length > 0 && (
           <div className="mt-3 rounded-xl2 border border-warning/40 bg-warning/10 px-4 py-3.5 shadow-card2">
-            <p className="flex items-center gap-2 text-sm font-bold text-warning">
+            <p className="flex items-center gap-2 text-sm font-bold text-[#B45309]">
               <WarningIcon className="h-5 w-5" />
               Warnings &amp; precautions
             </p>
@@ -643,15 +644,54 @@ function RefillSheet({
   const [days, setDays] = useState<number>(current?.intervalDays ?? 30);
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  // Callers pass an inline `onClose`; holding it in a ref keeps the trap effect
+  // to a single run per open instead of re-focusing on every render.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
     closeRef.current?.focus();
+
+    // Escape closes; Tab cycles inside the panel so focus can never land on the
+    // page behind this declared modal.
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const items = Array.from(panel.querySelectorAll<HTMLElement>(SHEET_FOCUSABLE)).filter(
+        (el) => el.offsetParent !== null || el === document.activeElement,
+      );
+      if (items.length === 0) {
+        e.preventDefault();
+        panel.focus();
+        return;
+      }
+      const first = items[0]!;
+      const last = items[items.length - 1]!;
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || active === panel)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || active === panel)) {
+        e.preventDefault();
+        first.focus();
+      }
     }
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      opener?.focus?.();
+    };
+  }, []);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center">
@@ -662,10 +702,12 @@ function RefillSheet({
         className="absolute inset-0 h-full w-full cursor-default bg-ink-900/40 backdrop-blur-sm"
       />
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="relative mb-16 w-full max-w-md animate-reveal-up rounded-t-sheet2 border-t border-line bg-surface p-5 pb-6 shadow-glass"
+        tabIndex={-1}
+        className="relative mb-16 w-full max-w-md animate-reveal-up rounded-t-sheet2 border-t border-line bg-surface p-5 pb-6 shadow-glass outline-none"
       >
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">

@@ -50,7 +50,7 @@ export function Compliance() {
       <Container>
         <div className="glass grid gap-10 rounded-sheet2 p-6 shadow-glass sm:p-10 lg:grid-cols-[0.85fr_1fr] lg:gap-14 lg:p-12">
           <div>
-            <span className="grid h-16 w-16 place-items-center rounded-xl2 bg-gradient-to-br from-primary-500 to-primary-700 text-white shadow-glow">
+            <span className="grid h-16 w-16 place-items-center rounded-xl2 bg-gradient-to-br from-primary-600 to-primary-800 text-white shadow-glow">
               <IconShieldCheck className="h-8 w-8" />
             </span>
             <Eyebrow className="mt-6">Licensing &amp; compliance</Eyebrow>

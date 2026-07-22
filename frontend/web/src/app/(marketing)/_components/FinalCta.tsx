@@ -35,7 +35,7 @@ export function FinalCta() {
             <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <Link
                 href="/shop"
-                className="press inline-flex h-14 w-full items-center justify-center gap-2 rounded-pill bg-gradient-to-r from-primary-500 to-primary-600 px-8 text-base font-semibold text-white shadow-glow transition-colors hover:to-primary-700 sm:w-auto"
+                className="press inline-flex h-14 w-full items-center justify-center gap-2 rounded-pill bg-gradient-to-r from-primary-700 to-primary-800 px-8 text-base font-semibold text-white shadow-glow transition-colors hover:to-primary-900 sm:w-auto"
               >
                 Start shopping
                 <IconArrowRight className="h-5 w-5" />

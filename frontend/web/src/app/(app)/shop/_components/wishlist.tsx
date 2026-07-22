@@ -16,6 +16,11 @@ import { cn } from "@/lib/cn";
  * per loaded page of the infinite grid, so every query key stays stable as more
  * pages append — re-keying a single growing list would refetch the whole set on
  * each page. The first paint of the grid is therefore exactly one request.
+ *
+ * The key is ["wishlist-status", "batch", <ids>] so it can never collide with
+ * the product page's single lookup (["wishlist-status", "one", productId]),
+ * which caches a bare boolean rather than this envelope of statuses. Both stay
+ * under the ["wishlist-status"] prefix so one invalidation refreshes them.
  */
 const STATUS_BATCH_MAX = 100;
 
@@ -46,7 +51,7 @@ export function useWishlist(idGroups: string[][]): WishlistController {
 
   const statusQueries = useQueries({
     queries: groups.map((ids) => ({
-      queryKey: ["wishlist-status", ids.join(",")],
+      queryKey: ["wishlist-status", "batch", ids.join(",")],
       queryFn: () =>
         api.get<WishlistStatus[]>(`/v1/wishlist/status${qs({ productIds: ids.join(",") })}`),
       enabled: signedIn,
@@ -86,6 +91,7 @@ export function useWishlist(idGroups: string[][]): WishlistController {
     onSettled: (_res, _err, { productId }) => {
       setPendingIds((prev) => prev.filter((id) => id !== productId));
       void queryClient.invalidateQueries({ queryKey: ["wishlist"] });
+      void queryClient.invalidateQueries({ queryKey: ["wishlist-status"] });
     },
   });
 

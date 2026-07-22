@@ -20,7 +20,13 @@ import { useToast } from "@/components/toast";
 
 type WishlistPages = InfiniteData<Envelope<WishlistEntry[]>>;
 
-const WISHLIST_KEY = ["wishlist"] as const;
+/**
+ * The cart caches a flat `Envelope<WishlistEntry[]>` under ["wishlist","summary"];
+ * this page caches `InfiniteData` — so the two surfaces must never share a cache
+ * entry. Invalidation still targets the ["wishlist"] prefix, which matches both.
+ */
+const WISHLIST_KEY = ["wishlist", "infinite"] as const;
+const WISHLIST_PREFIX = ["wishlist"] as const;
 
 /** Deep teal gradient CTA — kept at primary-700→800 so white label stays ≥4.5:1. */
 const CTA =
@@ -87,7 +93,7 @@ export default function WishlistPage() {
       toast.push({ type: "error", message: apiErrorMessage(err, "Could not remove this item") });
     },
     onSuccess: () => toast.push({ type: "success", message: "Removed from wishlist" }),
-    onSettled: () => void qc.invalidateQueries({ queryKey: WISHLIST_KEY }),
+    onSettled: () => void qc.invalidateQueries({ queryKey: WISHLIST_PREFIX }),
   });
 
   if (loading || !user) {

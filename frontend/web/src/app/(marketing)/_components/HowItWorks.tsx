@@ -53,10 +53,12 @@ export function HowItWorks() {
                 className="glass flex flex-col rounded-xl2 p-6 shadow-card2 sm:p-7"
               >
                 <div className="flex items-center justify-between gap-3">
-                  <span className="grid h-14 w-14 place-items-center rounded-xl2 bg-gradient-to-br from-primary-500 to-primary-700 text-white shadow-glow">
+                  <span className="grid h-14 w-14 place-items-center rounded-xl2 bg-gradient-to-br from-primary-600 to-primary-800 text-white shadow-glow">
                     {step.icon}
                   </span>
-                  <span className="text-3xl font-bold tabular-nums text-primary-600/25">
+                  {/* Watermark, not content: the step order is already carried
+                      by the <ol>, so this tint is exempt from 1.4.3. */}
+                  <span aria-hidden className="text-3xl font-bold tabular-nums text-primary-600/25">
                     {step.n}
                   </span>
                 </div>

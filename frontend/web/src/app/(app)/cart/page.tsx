@@ -36,8 +36,11 @@ export default function CartPage() {
 
   /* ------------------------------------------------------------- wishlist */
 
+  // Flat first page for the shelf. /wishlist caches an infinite list under
+  // ["wishlist","infinite"] — the shapes differ, so the keys must stay distinct;
+  // invalidating the ["wishlist"] prefix below still refreshes both surfaces.
   const wishlistQuery = useQuery({
-    queryKey: ["wishlist"],
+    queryKey: ["wishlist", "summary"],
     queryFn: () => api.get<WishlistEntry[]>("/v1/wishlist"),
     enabled: Boolean(user),
   });

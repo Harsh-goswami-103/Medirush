@@ -1,4 +1,26 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+type NotificationsService = typeof import("../src/modules/notifications/service");
+
+/**
+ * Hook run inside notifyUser (i.e. mid-row, after the sweep read the row and
+ * before it advances it) so a concurrent customer edit can be simulated
+ * deterministically. Keyed by userId; empty for every other test.
+ */
+const concurrentEdits = vi.hoisted(() => new Map<string, () => Promise<void>>());
+
+vi.mock("../src/modules/notifications/service", async () => {
+  const actual = await vi.importActual<NotificationsService>(
+    "../src/modules/notifications/service",
+  );
+  return {
+    ...actual,
+    notifyUser: async (input: Parameters<NotificationsService["notifyUser"]>[0]) => {
+      await concurrentEdits.get(input.userId)?.();
+      return actual.notifyUser(input);
+    },
+  };
+});
 
 /**
  * Refill reminders (Batch 3, §17 v1.1): owner-scoped CRUD over
@@ -65,6 +87,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  concurrentEdits.clear();
   await setupTestDb();
   clearAuthCaches();
   bustStoreConfigCache();
@@ -397,5 +420,61 @@ describe("refill-reminder sweep", () => {
     expect(result.notified).toBe(6);
     expect(await prisma.notification.count()).toBe(6);
     expect(await prisma.refillReminder.count({ where: { nextDueAt: { lte: new Date() } } })).toBe(0);
+  });
+
+  it("notifies every due reminder when they span several pages", async () => {
+    const p = await product();
+    const customers = await Promise.all(Array.from({ length: 5 }, () => user("CUSTOMER")));
+    for (const u of customers) {
+      await reminder(u.id, p.id, { intervalDays: 30, nextDueAt: daysFromNow(-3) });
+    }
+
+    // pageSize 2 over 5 due rows: each page mutates its rows out of the
+    // `nextDueAt <= now` filter, so a Prisma cursor would skip one per page.
+    const result = await runRefillReminderSweep(new Date(), 2);
+    expect(result).toEqual({ due: 5, notified: 5, skipped: 0, failed: 0 });
+
+    expect(await prisma.notification.count()).toBe(5);
+    for (const u of customers) {
+      expect(await prisma.notification.count({ where: { userId: u.id } })).toBe(1);
+    }
+    expect(await prisma.refillReminder.count({ where: { nextDueAt: { lte: new Date() } } })).toBe(0);
+  });
+
+  it("does not clobber a concurrent edit made while the row is being swept", async () => {
+    const customer = await user("CUSTOMER");
+    const untouched = await user("CUSTOMER");
+    const p = await product();
+    const edited = await reminder(customer.id, p.id, {
+      intervalDays: 30,
+      nextDueAt: daysFromNow(-1),
+    });
+    const other = await reminder(untouched.id, p.id, {
+      intervalDays: 30,
+      nextDueAt: daysFromNow(-1),
+    });
+
+    // The customer re-arms the reminder on a 7-day cadence mid-sweep.
+    const customerChoice = daysFromNow(7);
+    concurrentEdits.set(customer.id, async () => {
+      await prisma.refillReminder.update({
+        where: { id: edited.id },
+        data: { intervalDays: 7, nextDueAt: customerChoice },
+      });
+    });
+
+    const result = await runRefillReminderSweep();
+    expect(result.failed).toBe(0);
+    expect(result.notified).toBe(2);
+
+    const after = await prisma.refillReminder.findUniqueOrThrow({ where: { id: edited.id } });
+    expect(after.intervalDays).toBe(7);
+    expect(after.nextDueAt.getTime()).toBe(customerChoice.getTime());
+    expect(after.lastNotifiedAt).toBeNull();
+
+    // The untouched row still advances normally.
+    const rolled = await prisma.refillReminder.findUniqueOrThrow({ where: { id: other.id } });
+    expect(rolled.nextDueAt.getTime()).toBe(other.nextDueAt.getTime() + 30 * DAY_MS);
+    expect(rolled.lastNotifiedAt).not.toBeNull();
   });
 });

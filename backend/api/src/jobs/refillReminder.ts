@@ -11,9 +11,14 @@ import { notifyUser } from "../modules/notifications/service";
  * Idempotent by construction — a row is only ever advanced to a `nextDueAt`
  * STRICTLY in the future, so a second run on the same day (retry, duplicate
  * schedule fire) finds nothing due and cannot double-notify. Paged with a
- * keyset cursor rather than a full table load, and a row that throws is logged
- * and stepped over: one bad reminder must never abort the sweep (and, because
- * the cursor has already moved past it, cannot loop it either).
+ * keyset predicate rather than a full table load, and a row that throws is
+ * logged and stepped over: one bad reminder must never abort the sweep (and,
+ * because the keyset has already moved past it, cannot loop it either).
+ *
+ * The keyset is an explicit `id > lastSeen` predicate, NOT Prisma's
+ * `cursor`/`skip`: the sweep mutates each row out of the `nextDueAt <= now`
+ * filter as it goes, so the cursor row would no longer exist in the next
+ * page's result set and Prisma's skip:1 would drop a due reminder per page.
  */
 
 export const REFILL_REMINDER_QUEUE = "refill-reminder";
@@ -48,18 +53,27 @@ export function advanceDueDate(nextDueAt: Date, intervalDays: number, now: Date)
   return new Date(nextDueAt.getTime() + periods * step);
 }
 
-/** Run one sweep pass. `now` is injectable so the due cutoff is deterministic under test. */
-export async function runRefillReminderSweep(now: Date = new Date()): Promise<RefillSweepResult> {
+/**
+ * Run one sweep pass. `now` is injectable so the due cutoff is deterministic
+ * under test; `pageSize` so paging can be exercised without seeding a full page.
+ */
+export async function runRefillReminderSweep(
+  now: Date = new Date(),
+  pageSize: number = PAGE_SIZE,
+): Promise<RefillSweepResult> {
   const prisma = getPrisma();
   const result: RefillSweepResult = { due: 0, notified: 0, skipped: 0, failed: 0 };
 
-  let cursor: string | undefined;
+  let lastId: string | undefined;
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const rows = await prisma.refillReminder.findMany({
-      where: { isActive: true, nextDueAt: { lte: now } },
+      where: {
+        isActive: true,
+        nextDueAt: { lte: now },
+        ...(lastId ? { id: { gt: lastId } } : {}),
+      },
       orderBy: { id: "asc" },
-      take: PAGE_SIZE,
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      take: pageSize,
       select: {
         id: true,
         userId: true,
@@ -70,7 +84,7 @@ export async function runRefillReminderSweep(now: Date = new Date()): Promise<Re
       },
     });
     if (rows.length === 0) break;
-    cursor = rows[rows.length - 1]?.id;
+    lastId = rows[rows.length - 1]?.id;
 
     const optedOut = new Set(
       (
@@ -92,15 +106,30 @@ export async function runRefillReminderSweep(now: Date = new Date()): Promise<Re
             title: "Time to reorder",
             body: `Time to reorder ${row.product.name} — tap to add it to your cart.`,
             data: { productId: row.productId, slug: row.product.slug },
+            category: "refill",
           });
         }
-        await prisma.refillReminder.update({
-          where: { id: row.id },
+        // Conditional on the state this pass read: if the customer changed the
+        // schedule (or paused it) since, their edit wins and we leave it alone
+        // rather than writing back a nextDueAt derived from a stale interval.
+        const advanced = await prisma.refillReminder.updateMany({
+          where: {
+            id: row.id,
+            nextDueAt: row.nextDueAt,
+            intervalDays: row.intervalDays,
+            isActive: true,
+          },
           data: {
             nextDueAt: advanceDueDate(row.nextDueAt, row.intervalDays, now),
             ...(shouldNotify ? { lastNotifiedAt: now } : {}),
           },
         });
+        if (advanced.count === 0) {
+          logger.info(
+            { refillReminderId: row.id, userId: row.userId },
+            "refill-reminder: row changed concurrently, advance skipped",
+          );
+        }
         if (shouldNotify) result.notified += 1;
         else result.skipped += 1;
       } catch (error) {
@@ -112,7 +141,7 @@ export async function runRefillReminderSweep(now: Date = new Date()): Promise<Re
       }
     }
 
-    if (rows.length < PAGE_SIZE) break;
+    if (rows.length < pageSize) break;
   }
 
   logger.info(result, "refill-reminder sweep completed");

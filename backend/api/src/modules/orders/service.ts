@@ -1260,14 +1260,17 @@ async function loadOrder(id: string, viewerUserId: string): Promise<Order> {
 /* -------------------------------------------------------------- restock */
 
 /**
- * Reverse an order's stock reservation inside the caller's transaction
+ * Reverse an order's reservations inside the caller's transaction
  * (pinned cross-agent signature — agent D's ops cancel consumes this):
  * - add each item's qty back to `Product.stockQty` + a CANCEL_RESTOCK adjustment;
  * - when the order was already allocated (READY+ cancels), restore the
- *   `Batch.qtyAvailable` decremented at packing from the ItemBatchAlloc rows.
+ *   `Batch.qtyAvailable` decremented at packing from the ItemBatchAlloc rows;
+ * - release the coupon the order reserved when it was never paid for.
  * Status flip + OrderEvent are the CALLER's responsibility (§18.3).
  */
 export async function restockOrder(tx: Prisma.TransactionClient, orderId: string): Promise<void> {
+  await releaseUnpaidCouponRedemption(tx, orderId);
+
   const items = await tx.orderItem.findMany({
     where: { orderId },
     include: { allocations: true },
@@ -1292,4 +1295,28 @@ export async function restockOrder(tx: Prisma.TransactionClient, orderId: string
       `;
     }
   }
+}
+
+/**
+ * Give a cancelled-before-payment order's coupon back to the customer. A
+ * CouponRedemption is written at create, so an abandoned PREPAID checkout
+ * (payment timeout, payment.failed, customer cancel) would otherwise burn a
+ * single-use referral/welcome coupon for good.
+ *
+ * `placedAt` is the paid-for marker: it is stamped at create for COD and only
+ * by `payment.captured` for PREPAID, so a null value means the order never
+ * left PENDING_PAYMENT and no money was ever taken. Cancelling an order that
+ * WAS paid for keeps its redemption — the customer is refunded instead.
+ *
+ * Runs inside the caller's cancellation transaction, so the release can never
+ * half-apply. `deleteMany` on the unique `orderId` is a no-op when the order
+ * carried no coupon.
+ */
+async function releaseUnpaidCouponRedemption(
+  tx: Prisma.TransactionClient,
+  orderId: string,
+): Promise<void> {
+  const order = await tx.order.findUnique({ where: { id: orderId }, select: { placedAt: true } });
+  if (!order || order.placedAt !== null) return;
+  await tx.couponRedemption.deleteMany({ where: { orderId } });
 }

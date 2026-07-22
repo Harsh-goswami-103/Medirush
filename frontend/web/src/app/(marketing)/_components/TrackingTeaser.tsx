@@ -59,9 +59,11 @@ export function TrackingTeaser() {
     <section aria-labelledby="tracking-title" className="py-20 sm:py-24">
       <Container>
         <div className="relative isolate overflow-hidden rounded-sheet2 bg-mesh-hero shadow-glass">
+          {/* Same constraint as the hero: the scrim's lightest stop has to hold
+              the white copy above 4.5:1 over the mesh's brightest sweep. */}
           <div
             aria-hidden
-            className="absolute inset-0 bg-gradient-to-br from-ink-900/60 via-ink-900/40 to-ink-900/65"
+            className="absolute inset-0 bg-gradient-to-br from-ink-900/72 via-ink-900/58 to-ink-900/78"
           />
           <div className="relative grid gap-10 p-6 sm:p-10 lg:grid-cols-2 lg:items-center lg:gap-14 lg:p-14">
             <div>
@@ -151,7 +153,7 @@ export function TrackingTeaser() {
                   textAnchor="middle"
                   fontSize="11"
                   fontWeight="600"
-                  fill="rgba(255,255,255,0.78)"
+                  fill="rgba(255,255,255,0.88)"
                 >
                   Pharmacy
                 </text>
@@ -161,7 +163,7 @@ export function TrackingTeaser() {
                   textAnchor="middle"
                   fontSize="11"
                   fontWeight="600"
-                  fill="rgba(255,255,255,0.78)"
+                  fill="rgba(255,255,255,0.88)"
                 >
                   Your door
                 </text>

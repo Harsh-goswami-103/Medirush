@@ -9,6 +9,20 @@ import { cn } from "@/lib/cn";
 import { SectionHeader } from "./section";
 
 /**
+ * Health-concern catalogue. Shared with the shop page (which resolves a
+ * deep-linked `?concern=<slug>` to its display name) — one react-query key, so
+ * both consumers hit the cache instead of the network twice.
+ */
+export function useConcerns() {
+  return useQuery({
+    queryKey: ["concerns"],
+    queryFn: () => api.get<HealthConcern[]>("/v1/concerns"),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
+/**
  * "Shop by health concern" rail — a second browse dimension alongside category.
  * Selecting a concern filters the grid via `?concern=<slug>` on /v1/products.
  * The rail is supplementary, so an error or an empty catalogue hides it rather
@@ -19,14 +33,9 @@ export function ConcernRail({
   onSelect,
 }: {
   activeSlug: string | undefined;
-  onSelect: (concern: HealthConcern | undefined) => void;
+  onSelect: (slug: string | undefined) => void;
 }) {
-  const concernsQuery = useQuery({
-    queryKey: ["concerns"],
-    queryFn: () => api.get<HealthConcern[]>("/v1/concerns"),
-    staleTime: 5 * 60_000,
-    retry: false,
-  });
+  const concernsQuery = useConcerns();
 
   if (concernsQuery.isLoading) {
     return (
@@ -71,7 +80,7 @@ export function ConcernRail({
             <li key={c.id} className="w-[68px] shrink-0">
               <button
                 type="button"
-                onClick={() => onSelect(active ? undefined : c)}
+                onClick={() => onSelect(active ? undefined : c.slug)}
                 aria-pressed={active}
                 className="press flex w-full flex-col items-center gap-1.5"
               >

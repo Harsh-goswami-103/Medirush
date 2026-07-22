@@ -184,9 +184,11 @@ export async function applyReferral(userId: string, rawCode: string): Promise<Re
 
   const referrer = await prisma.user.findUnique({
     where: { referralCode: code },
-    select: { id: true },
+    select: { id: true, isBlocked: true },
   });
-  if (!referrer) {
+  // A blocked account (which includes DPDP-anonymised ones — erasure sets
+  // isBlocked and nulls the code) must not accrue new referrals or coupons.
+  if (!referrer || referrer.isBlocked) {
     throw new AppError("NOT_FOUND", "That referral code is not valid", 404);
   }
   if (referrer.id === userId) {
@@ -247,6 +249,7 @@ export async function applyReferral(userId: string, rawCode: string): Promise<Re
     title: "Your welcome offer is ready",
     body: `Use code ${welcome.code} for ${description}.`,
     data: { couponCode: welcome.code, valuePaise },
+    category: "promo",
   });
 
   return getReferralSummary(userId);
@@ -268,6 +271,14 @@ export async function maybeRewardReferral(refereeId: string): Promise<void> {
     });
     if (!referral) return;
     referralId = referral.id;
+
+    // Never mint a reward for a blocked or DPDP-anonymised referrer: the coupon
+    // would be unusable and the notification would repopulate a scrubbed account.
+    const referrer = await prisma.user.findUnique({
+      where: { id: referral.referrerId },
+      select: { isBlocked: true },
+    });
+    if (!referrer || referrer.isBlocked) return;
 
     const delivered = await prisma.order.count({
       where: { userId: refereeId, status: "DELIVERED" },
@@ -297,6 +308,7 @@ export async function maybeRewardReferral(refereeId: string): Promise<void> {
       title: "You earned a referral reward",
       body: `Your friend's first order was delivered. Use code ${coupon.code} for ₹${Math.round(valuePaise / 100)} off.`,
       data: { couponCode: coupon.code, valuePaise },
+      category: "promo",
     });
   } catch (error) {
     // The referral may already be flipped to REWARDED with no coupon minted —

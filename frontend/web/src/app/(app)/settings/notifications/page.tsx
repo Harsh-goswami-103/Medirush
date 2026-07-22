@@ -29,13 +29,11 @@ function Toggle({
   label,
   hint,
   checked,
-  disabled,
   onChange,
 }: {
   label: string;
   hint: string;
   checked: boolean;
-  disabled?: boolean;
   onChange: (next: boolean) => void;
 }) {
   const labelId = useId();
@@ -52,9 +50,8 @@ function Toggle({
         role="switch"
         aria-checked={checked}
         aria-labelledby={labelId}
-        disabled={disabled}
         onClick={() => onChange(!checked)}
-        className="press -my-2 -mr-2 flex h-11 w-14 shrink-0 items-center justify-center disabled:opacity-50"
+        className="press -my-2 -mr-2 flex h-11 w-14 shrink-0 items-center justify-center"
       >
         <span
           className={cn(
@@ -127,6 +124,16 @@ export default function NotificationSettingsPage() {
 
   const prefs = prefsQuery.data?.data;
 
+  const prefsStatusMessage = prefsQuery.isError
+    ? "Could not load your notification settings"
+    : !prefs
+      ? "Loading your notification settings"
+      : savePrefs.isPending
+        ? "Saving your preference"
+        : savePrefs.isSuccess
+          ? "Preference saved"
+          : "";
+
   return (
     <div className="min-h-dvh bg-mesh pb-10">
       <header className="sticky top-0 z-30 flex items-center gap-2 border-b border-line bg-surface/90 px-4 py-3 backdrop-blur">
@@ -175,31 +182,36 @@ export default function NotificationSettingsPage() {
             ) : (
               <div
                 className="divide-y divide-line overflow-hidden rounded-xl2 bg-surface shadow-card2"
-                aria-live="polite"
+                aria-busy={savePrefs.isPending}
               >
+                {/* The switches are optimistic and stay enabled while saving, so
+                    keyboard focus never drops to <body> mid-toggle. */}
                 <Toggle
                   label="Order updates"
                   hint="Placed, packed, out for delivery, prescription review and refunds."
                   checked={prefs.orderUpdates}
-                  disabled={savePrefs.isPending}
                   onChange={(v) => savePrefs.mutate({ orderUpdates: v })}
                 />
                 <Toggle
                   label="Offers & promotions"
                   hint="Coupons, campaigns and seasonal deals."
                   checked={prefs.promotions}
-                  disabled={savePrefs.isPending}
                   onChange={(v) => savePrefs.mutate({ promotions: v })}
                 />
                 <Toggle
                   label="Refill reminders"
                   hint="A nudge when your regular medicine is due to run out."
                   checked={prefs.refillReminders}
-                  disabled={savePrefs.isPending}
                   onChange={(v) => savePrefs.mutate({ refillReminders: v })}
                 />
               </div>
             )}
+
+            {/* Only the save outcome is announced — a live region around the
+                switch list would re-read every preference on each change. */}
+            <p className="sr-only" role="status" aria-live="polite">
+              {prefsStatusMessage}
+            </p>
 
             <p className="mt-2 px-1 text-xs leading-5 text-ink-400">
               We still send messages that are essential to a live order — delivery arrival,
@@ -218,11 +230,13 @@ export default function NotificationSettingsPage() {
             <div className="rounded-xl2 border border-danger/25 bg-danger/5 p-4 shadow-card2">
               <p className="text-sm font-semibold text-ink-900">Delete my account</p>
               <p className="mt-1 text-sm leading-6 text-ink-600">
-                Your name, phone, email, addresses, patient profiles and prescription files are
-                removed permanently. Records a licensed pharmacy must keep by law — invoices, the
-                GST record and the Schedule-H1 prescription register — are retained for their
-                statutory period with your personal details anonymised. You cannot sign back into
-                this account afterwards.
+                Your name, phone, email, addresses, patient profiles and saved preferences are
+                removed permanently. Your prescription images and invoices are{" "}
+                <span className="font-semibold text-ink-900">not</span> deleted —
+                a licensed pharmacy is legally required to keep the Schedule-H1 prescription
+                register, invoices and the GST record for their statutory period, so those are
+                retained with your identity anonymised. You cannot sign back into this account
+                afterwards.
               </p>
               <Button
                 variant="danger"
@@ -315,10 +329,11 @@ function DeleteAccountModal({
     >
       <div className="space-y-3">
         <p className="text-sm leading-6 text-ink-600">
-          This removes your personal data — profile, addresses, patient profiles, prescription files
-          and saved preferences. Invoices, the GST record and the Schedule-H1 prescription register
-          are kept in anonymised form because a licensed pharmacy is legally required to retain
-          them. This cannot be undone.
+          This removes your personal data — profile, name, phone, email, addresses, patient profiles
+          and saved preferences. Your prescription images, invoices, the GST record and the
+          Schedule-H1 prescription register are <span className="font-semibold text-ink-900">kept</span>{" "}
+          in anonymised form — they are not deleted, because a licensed pharmacy is legally required
+          to retain them. This cannot be undone.
         </p>
         {blocked && (
           <p role="alert" className="rounded-input border border-danger/25 bg-danger/5 px-3 py-2 text-sm text-danger">

@@ -8,8 +8,10 @@ import { IconArrowRight, IconBolt, IconCheck, IconRider, IconShieldCheck } from 
 
 /**
  * Hero. The mesh gradient is deliberately busy, so a fixed ink scrim sits
- * between it and every piece of copy — white-on-scrim stays above 6:1 even at
- * the gradient's lightest sweep (§20.6 / WCAG 1.4.3).
+ * between it and every piece of copy. The scrim's *lightest* stop is what has
+ * to carry contrast: at ink-900/55 over the mesh's brightest sweep (teal-500)
+ * solid white lands ~7.3:1 and the white/85 subcopy ~5.8:1, both clear of the
+ * 4.5:1 body-text floor (§20.6 / WCAG 1.4.3).
  */
 export function Hero() {
   const { store } = useStore();
@@ -26,7 +28,7 @@ export function Hero() {
     <section className="relative isolate overflow-hidden bg-mesh-hero bg-mesh-animated">
       <div
         aria-hidden
-        className="absolute inset-0 bg-gradient-to-b from-ink-900/55 via-ink-900/35 to-ink-900/60"
+        className="absolute inset-0 bg-gradient-to-b from-ink-900/70 via-ink-900/55 to-ink-900/75"
       />
 
       <Container className="relative grid gap-12 pb-24 pt-28 sm:pb-28 sm:pt-32 lg:grid-cols-[1.05fr_1fr] lg:items-center lg:gap-16 lg:pb-36 lg:pt-40">
@@ -100,7 +102,7 @@ function MockOrderStack() {
       <div className="glass-dark animate-float rounded-sheet2 p-5 text-white shadow-glass sm:p-6">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.16em] text-white/65">Order</p>
+            <p className="text-[11px] uppercase tracking-[0.16em] text-white/75">Order</p>
             <p className="text-lg font-semibold">#MR-2418</p>
           </div>
           <span className="inline-flex items-center gap-1.5 rounded-pill bg-primary-500/25 px-3 py-1.5 text-xs font-semibold text-primary-100">
@@ -119,7 +121,7 @@ function MockOrderStack() {
               <span
                 className={
                   step.done
-                    ? "grid h-7 w-7 shrink-0 place-items-center rounded-pill bg-primary-500 text-white"
+                    ? "grid h-7 w-7 shrink-0 place-items-center rounded-pill bg-primary-600 text-white"
                     : "grid h-7 w-7 shrink-0 place-items-center rounded-pill border-2 border-primary-200/70 text-primary-100"
                 }
               >
@@ -130,7 +132,7 @@ function MockOrderStack() {
                 )}
               </span>
               <span className="flex-1 text-sm font-medium">{step.label}</span>
-              <span className="text-xs text-white/60">{step.meta}</span>
+              <span className="text-xs text-white/75">{step.meta}</span>
             </li>
           ))}
         </ol>
@@ -141,7 +143,7 @@ function MockOrderStack() {
           </span>
           <div className="flex-1">
             <p className="text-sm font-semibold">Ravi S.</p>
-            <p className="text-xs text-white/65">1.8 km away · on the way</p>
+            <p className="text-xs text-white/75">1.8 km away · on the way</p>
           </div>
           <IconRider className="h-6 w-6 text-primary-200" />
         </div>
@@ -155,7 +157,7 @@ function MockOrderStack() {
           <span className="text-3xl font-bold leading-none">~40</span>
           <span className="text-sm font-semibold text-primary-100">min</span>
         </div>
-        <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-white/70">Estimated arrival</p>
+        <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-white/75">Estimated arrival</p>
       </div>
     </div>
   );

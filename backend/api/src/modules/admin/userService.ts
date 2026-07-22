@@ -284,10 +284,11 @@ async function revokeFirebaseSessions(firebaseUid: string): Promise<void> {
  * DELETE /v1/me — one implementation so the two can never diverge.
  *
  * One transaction: scrub User PII (name → "Deleted user", email → null,
- * phone/firebaseUid → `anon:<userId>`), delete the non-statutory personal
- * satellites (addresses, device push tokens, cart(+items), notifications,
- * stock alerts, wishlist, refill reminders, notification preferences, dependent
- * patient profiles), null out free-text rating comments, set isBlocked=true
+ * phone/firebaseUid → `anon:<userId>`, referralCode → null), delete the
+ * non-statutory personal satellites (addresses, device push tokens,
+ * cart(+items), notifications, stock alerts, wishlist, refill reminders,
+ * notification preferences, dependent patient profiles), null out free-text
+ * rating comments, set isBlocked=true
  * (block semantics — live sessions die at the auth plugin), write the AuditLog
  * row with counts. Sessions are then revoked at the identity provider.
  *
@@ -416,6 +417,9 @@ export async function anonymizeUserAccount(
         email: null,
         phone: `${ANON_PREFIX}${id}`,
         firebaseUid: `${ANON_PREFIX}${id}`,
+        // Retire the shareable code: an erased account must stop attracting new
+        // Referral/Coupon/Notification rows (referrals also reject blocked users).
+        referralCode: null,
         isBlocked: true,
       },
     });

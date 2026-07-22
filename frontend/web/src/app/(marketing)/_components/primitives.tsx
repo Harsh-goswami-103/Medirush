@@ -8,7 +8,7 @@ export type Tone = "ink" | "light";
 export function Wordmark({ tone = "ink", className }: { tone?: Tone; className?: string }) {
   return (
     <span className={cn("flex items-center gap-2.5", className)}>
-      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl2 bg-gradient-to-br from-primary-500 to-primary-700 text-white shadow-glow">
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl2 bg-gradient-to-br from-primary-600 to-primary-800 text-white shadow-glow">
         <LogoMark />
       </span>
       <span

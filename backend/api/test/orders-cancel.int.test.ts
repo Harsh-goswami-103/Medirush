@@ -52,6 +52,79 @@ async function placeCod(opts: { pricePaise?: number; stock?: number; qty?: numbe
   return { customer, headers, product: p, addressId: addr.id, order: res.json().data.order };
 }
 
+/** A personal FLAT coupon (the shape the referral programme mints). */
+function coupon(userId: string, code: string) {
+  const now = new Date();
+  return prisma.coupon.create({
+    data: {
+      code,
+      kind: "FLAT",
+      description: "referral reward",
+      valuePaiseOrPct: 5000,
+      minOrderPaise: 0,
+      perUserLimit: 1,
+      startsAt: now,
+      endsAt: new Date(now.getTime() + 30 * 86_400_000),
+      isActive: true,
+      isPublic: false,
+      userId,
+    },
+  });
+}
+
+/** A PREPAID order row in an arbitrary state, with one line for `productId`. */
+function prepaidOrder(opts: {
+  orderNo: string;
+  userId: string;
+  productId: string;
+  status: "PENDING_PAYMENT" | "PACKING";
+  paymentStatus: "PENDING" | "PAID";
+  placedAt: Date | null;
+  couponCode: string;
+}) {
+  return prisma.order.create({
+    data: {
+      orderNo: opts.orderNo,
+      userId: opts.userId,
+      status: opts.status,
+      paymentMethod: "PREPAID",
+      paymentStatus: opts.paymentStatus,
+      addressSnapshot: {
+        name: "Cust",
+        phone: "+919000000000",
+        line1: "1 Test Rd",
+        pincode: "560001",
+        lat: 12.97,
+        lng: 77.59,
+      } as Prisma.InputJsonValue,
+      distanceM: 100,
+      itemsPaise: 20000,
+      deliveryPaise: 2000,
+      discountPaise: 5000,
+      totalPaise: 17000,
+      couponCode: opts.couponCode,
+      requiresRx: false,
+      rxStatus: "NA",
+      placedAt: opts.placedAt,
+      items: {
+        create: [
+          {
+            productId: opts.productId,
+            nameSnap: "Test",
+            packSizeSnap: "1x10",
+            pricePaise: 20000,
+            mrpPaise: 22000,
+            gstRatePct: 12,
+            hsnSnap: "3004",
+            requiresRx: false,
+            qty: 1,
+          },
+        ],
+      },
+    },
+  });
+}
+
 beforeAll(async () => {
   app = await buildApp();
   await app.ready();
@@ -231,5 +304,78 @@ describe("POST /v1/ops/orders/:id/cancel", () => {
     expect(updated?.paymentStatus).toBe("REFUND_INITIATED");
     const payment = await prisma.payment.findFirst({ where: { orderId: order.id } });
     expect(payment?.refundId).toMatch(/^rfnd_/);
+  });
+});
+
+describe("coupon release on cancellation", () => {
+  it("cancelling an unpaid PENDING_PAYMENT order gives the coupon back", async () => {
+    const customer = await user("CUSTOMER");
+    const p = await product({ stock: 10, pricePaise: 20000 });
+    const c = await coupon(customer.id, "MR-CXLREL1");
+    const order = await prepaidOrder({
+      orderNo: "MR-CXLREL-1",
+      userId: customer.id,
+      productId: p.id,
+      status: "PENDING_PAYMENT",
+      paymentStatus: "PENDING",
+      placedAt: null,
+      couponCode: c.code,
+    });
+    await prisma.payment.create({
+      data: { orderId: order.id, rzpOrderId: "order_cxlrel1", amountPaise: 17000 },
+    });
+    await prisma.couponRedemption.create({
+      data: { couponId: c.id, userId: customer.id, orderId: order.id },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/orders/${order.id}/cancel`,
+      headers: authHeaders(customer),
+      payload: { reason: "abandoned the payment sheet" },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().data.order.status).toBe("CANCELLED");
+
+    // The redemption is released, so the single-use coupon is spendable again.
+    expect(await prisma.couponRedemption.count({ where: { orderId: order.id } })).toBe(0);
+    expect(await prisma.couponRedemption.count({ where: { couponId: c.id } })).toBe(0);
+  });
+
+  it("cancelling a PAID order keeps the redemption (the customer is refunded)", async () => {
+    const customer = await user("CUSTOMER");
+    const ops = await user("INVENTORY");
+    const p = await product({ stock: 10, pricePaise: 20000 });
+    const c = await coupon(customer.id, "MR-CXLREL2");
+    const order = await prepaidOrder({
+      orderNo: "MR-CXLREL-2",
+      userId: customer.id,
+      productId: p.id,
+      status: "PACKING",
+      paymentStatus: "PAID",
+      placedAt: new Date(),
+      couponCode: c.code,
+    });
+    await prisma.payment.create({
+      data: {
+        orderId: order.id,
+        rzpOrderId: "order_cxlrel2",
+        rzpPaymentId: "pay_cxlrel2",
+        amountPaise: 17000,
+      },
+    });
+    await prisma.couponRedemption.create({
+      data: { couponId: c.id, userId: customer.id, orderId: order.id },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/v1/ops/orders/${order.id}/cancel`,
+      headers: authHeaders(ops),
+      payload: { reason: "out of stock" },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+
+    expect(await prisma.couponRedemption.count({ where: { orderId: order.id } })).toBe(1);
   });
 });

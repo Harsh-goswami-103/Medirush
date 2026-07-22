@@ -57,7 +57,7 @@ export function CategoryTiles() {
               action={
                 <Link
                   href="/shop"
-                  className="press inline-flex h-11 w-full items-center justify-center rounded-pill bg-gradient-to-r from-primary-500 to-primary-600 px-5 text-sm font-semibold text-white shadow-glow"
+                  className="press inline-flex h-11 w-full items-center justify-center rounded-pill bg-gradient-to-r from-primary-700 to-primary-800 px-5 text-sm font-semibold text-white shadow-glow"
                 >
                   Browse the store
                 </Link>

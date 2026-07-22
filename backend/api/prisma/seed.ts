@@ -377,6 +377,9 @@ async function main(): Promise<void> {
   // 1 ── wipe volatile rows (FK-safe order) so re-seeding never crashes ─────
   await prisma.walletTxn.deleteMany();
   await prisma.itemBatchAlloc.deleteMany();
+  // Post-delivery rows also FK to Order — they must go before the orders do.
+  await prisma.rating.deleteMany();
+  await prisma.returnRequest.deleteMany();
   await prisma.orderEvent.deleteMany();
   await prisma.delivery.deleteMany();
   await prisma.deliveryOffer.deleteMany();

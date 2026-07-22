@@ -64,7 +64,7 @@ export function MarketingNav() {
           className={cn(
             "press inline-flex h-11 shrink-0 items-center justify-center rounded-pill px-5 text-sm font-semibold transition-colors",
             scrolled
-              ? "bg-gradient-to-r from-primary-500 to-primary-600 text-white shadow-glow hover:to-primary-700"
+              ? "bg-gradient-to-r from-primary-700 to-primary-800 text-white shadow-glow hover:to-primary-900"
               : "bg-white text-primary-700 shadow-[0_8px_24px_-8px_rgba(255,255,255,0.55)] hover:bg-primary-50",
           )}
         >

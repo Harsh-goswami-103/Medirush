@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import type { Category, HealthConcern, ProductSort, ProductSummary } from "@medrush/contracts";
+import type { Category, ProductSort, ProductSummary } from "@medrush/contracts";
 import { api, qs } from "@/lib/api";
 import { useStore } from "@/lib/store";
 import { ProductCard, ProductGridSkeleton } from "@/components/shop";
@@ -12,7 +13,7 @@ import { Button, EmptyState, ErrorState, Skeleton } from "@/components/ui";
 import { Reveal } from "@/components/motion";
 import { cn } from "@/lib/cn";
 import { SectionHeader } from "./_components/section";
-import { ConcernRail } from "./_components/concerns";
+import { ConcernRail, useConcerns } from "./_components/concerns";
 import { WishlistHeart, useWishlist } from "./_components/wishlist";
 
 /** localStorage key for the recent-search chips (most recent first, capped). */
@@ -45,17 +46,63 @@ const PILL_ON =
   "border-transparent bg-gradient-to-br from-primary-700 to-primary-900 text-white shadow-glow";
 const PILL_OFF = "border-line bg-surface text-ink-600 shadow-sm";
 
+/**
+ * `useSearchParams` opts the subtree into client rendering, so the grid lives
+ * behind a Suspense boundary — without one the production build fails on this
+ * route. The fallback is only ever shown while the shell prerenders.
+ */
 export default function Home() {
+  return (
+    <Suspense fallback={<ShopFallback />}>
+      <ShopBrowser />
+    </Suspense>
+  );
+}
+
+function ShopFallback() {
+  return (
+    <div className="px-4 pt-5">
+      <Skeleton className="h-12 w-full rounded-xl2" />
+      <div className="mt-6">
+        <ProductGridSkeleton count={8} />
+      </div>
+    </div>
+  );
+}
+
+function ShopBrowser() {
   const { store, isLoading: storeLoading } = useStore();
-  const [category, setCategory] = useState<string | undefined>(undefined);
-  const [concern, setConcern] = useState<HealthConcern | undefined>(undefined);
-  const [rawSearch, setRawSearch] = useState("");
-  const [search, setSearch] = useState("");
+
+  // Deep links from marketing/offers surfaces: /shop?category=&concern=&search=.
+  const searchParams = useSearchParams();
+  const categoryParam = searchParams.get("category") ?? undefined;
+  const concernParam = searchParams.get("concern") ?? undefined;
+  const searchParam = searchParams.get("search")?.trim() ?? "";
+
+  const [category, setCategory] = useState<string | undefined>(categoryParam);
+  const [concern, setConcern] = useState<string | undefined>(concernParam);
+  const [rawSearch, setRawSearch] = useState(searchParam);
+  const [search, setSearch] = useState(searchParam);
   const [sort, setSort] = useState<ProductSort | undefined>(undefined);
   const [inStockOnly, setInStockOnly] = useState(false);
   const [discountedOnly, setDiscountedOnly] = useState(false);
   const [rxFilter, setRxFilter] = useState<boolean | undefined>(undefined);
   const [recents, setRecents] = useState<string[]>(() => loadRecents());
+
+  // A deep link can also arrive while this page is already mounted (the App
+  // Router reuses the component across query-string changes), which the state
+  // initialisers above would miss. Re-apply only when the params actually
+  // change, so in-page filter edits are never clobbered.
+  const deepLink = `${categoryParam ?? ""}|${concernParam ?? ""}|${searchParam}`;
+  const appliedDeepLink = useRef(deepLink);
+  useEffect(() => {
+    if (appliedDeepLink.current === deepLink) return;
+    appliedDeepLink.current = deepLink;
+    setCategory(categoryParam);
+    setConcern(concernParam);
+    setRawSearch(searchParam);
+    setSearch(searchParam);
+  }, [deepLink, categoryParam, concernParam, searchParam]);
 
   // Debounce the search box so keystrokes don't fire a query each.
   useEffect(() => {
@@ -98,11 +145,12 @@ export default function Home() {
   // returns `meta.nextCursor`; the old flat `limit:50` fetch just ignored it.
   // Sorted/filtered views compose server-side; a sorted view is top-N (the API
   // returns nextCursor null there, so paging stops naturally).
+  const concernsQuery = useConcerns();
   const productsQuery = useInfiniteQuery({
     queryKey: [
       "products",
       category ?? "",
-      concern?.slug ?? "",
+      concern ?? "",
       search,
       sort ?? "",
       inStockOnly,
@@ -113,7 +161,7 @@ export default function Home() {
       api.get<ProductSummary[]>(
         `/v1/products${qs({
           category,
-          concern: concern?.slug,
+          concern,
           search: search || undefined,
           sort,
           inStock: inStockOnly ? "true" : undefined,
@@ -173,9 +221,10 @@ export default function Home() {
   }
 
   const activeCategoryName = categories.find((c) => c.slug === category)?.name;
+  const activeConcernName = (concernsQuery.data?.data ?? []).find((c) => c.slug === concern)?.name;
   const resultsTitle = search
     ? `Results for “${search}”`
-    : (concern?.name ?? activeCategoryName ?? "Popular right now");
+    : (activeConcernName ?? activeCategoryName ?? "Popular right now");
 
   return (
     <div className="pb-6">
@@ -304,7 +353,7 @@ export default function Home() {
         </Link>
       </Reveal>
 
-      <ConcernRail activeSlug={concern?.slug} onSelect={setConcern} />
+      <ConcernRail activeSlug={concern} onSelect={setConcern} />
 
       {/* Shop by category — visual tiles (Category.imageUrl was fetched and
           discarded before). Shown only in the default browse state. */}

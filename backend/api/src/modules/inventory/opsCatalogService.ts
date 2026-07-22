@@ -522,6 +522,8 @@ async function fireStockAlerts(productId: string): Promise<void> {
         title: "Back in stock",
         body: `${product.name} is available again — order now.`,
         data: { productId, slug: product.slug },
+        // Back-in-stock is a marketing nudge, not an order notice.
+        category: "promo",
       });
     }
     // Only the rows just notified — a concurrent new subscriber is preserved.
