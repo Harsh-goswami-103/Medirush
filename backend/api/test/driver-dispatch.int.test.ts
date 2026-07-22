@@ -117,6 +117,31 @@ beforeEach(async () => {
 });
 
 describe("driver status + offers + accept", () => {
+  it("duty toggles persist and survive the ops presence emit with no socket attached (#14)", async () => {
+    // The handler now emits `driver:status` post-commit. socket.io is attached
+    // in server.ts, not buildApp, so getIo() is null here — which is exactly
+    // the case worth pinning: a throwing emit would turn a duty toggle into a
+    // 500 and strand the driver online. Both directions must still commit.
+    const driver = await makeDriver(0);
+
+    for (const isOnline of [true, false, true]) {
+      const res = await app.inject({
+        method: "PATCH",
+        url: "/v1/driver/status",
+        headers: driver.headers,
+        payload: { isOnline },
+      });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().data).toMatchObject({ isOnline });
+
+      const row = await prisma.driverProfile.findUniqueOrThrow({
+        where: { id: driver.profileId },
+        select: { isOnline: true },
+      });
+      expect(row.isOnline).toBe(isOnline);
+    }
+  });
+
   it("toggles online, lists the offer, and accepts it", async () => {
     const driver = await makeDriver(0);
     const orderId = await makeReadyOrder();

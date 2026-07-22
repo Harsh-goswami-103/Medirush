@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Alert, ScrollView, View } from "react-native";
 import { APP_VERSION, API_BASE_URL } from "@/lib/env";
 import { useAuth } from "@/lib/auth";
@@ -9,8 +10,51 @@ import { font, space } from "@/lib/theme";
 export default function ProfileScreen() {
   const { user, logout } = useAuth();
   const { online, verified, busy, setOnline } = useDuty();
+  const [signingOut, setSigningOut] = useState(false);
+
+  /**
+   * PATCH /v1/driver/status is the only way the server learns the driver is off
+   * duty (there is no GET to reconcile against), so the toggle must succeed
+   * BEFORE the session goes away. If it fails — no network, 500 — signing out
+   * silently would leave them online server-side and still in the dispatch
+   * pool, so surface it and let them retry or knowingly override.
+   */
+  async function goOfflineThenSignOut() {
+    setSigningOut(true);
+    try {
+      await setOnline(false);
+    } catch {
+      setSigningOut(false);
+      Alert.alert(
+        "Couldn't go offline",
+        "You're still on duty and may keep getting offers. Check your connection and try again.",
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Try again", onPress: () => void goOfflineThenSignOut() },
+          { text: "Sign out anyway", style: "destructive", onPress: () => void logout() },
+        ],
+      );
+      return;
+    }
+    await logout();
+  }
 
   function confirmLogout() {
+    if (online) {
+      Alert.alert(
+        "You're currently on duty",
+        "Go offline and sign out? You'll stop receiving offers.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Go offline and sign out",
+            style: "destructive",
+            onPress: () => void goOfflineThenSignOut(),
+          },
+        ],
+      );
+      return;
+    }
     Alert.alert("Sign out?", "You'll stop receiving offers until you sign in again.", [
       { text: "Cancel", style: "cancel" },
       { text: "Sign out", style: "destructive", onPress: () => void logout() },
@@ -86,7 +130,12 @@ export default function ProfileScreen() {
       </Card>
 
       <View style={{ marginTop: space.md }}>
-        <Button title="Sign out" variant="danger" onPress={confirmLogout} />
+        <Button
+          title="Sign out"
+          variant="danger"
+          loading={signingOut}
+          onPress={confirmLogout}
+        />
       </View>
     </ScrollView>
   );

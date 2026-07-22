@@ -33,7 +33,7 @@ import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
 import { logger } from "../../core/logger";
 import { clearDriverLocation, setDriverLocation } from "../../core/locationStore";
-import { emitDriverLocation, emitOrderStatus } from "../../core/realtime";
+import { emitDriverLocation, emitDriverStatus, emitOrderStatus } from "../../core/realtime";
 import { getStoreConfig } from "../../core/storeInfo";
 import { enqueueInvoicePdf } from "../../jobs/invoicePdf";
 import { acceptOffer, rejectOffer } from "../dispatch/service";
@@ -402,6 +402,9 @@ export const driverRoutes: FastifyPluginAsync = async (app) => {
         where: { id: profile.id },
         data: { isOnline, lastSeenAt: new Date() },
       });
+      // Post-commit, so the ops fleet view sees presence change immediately
+      // rather than at its next poll (§7.3).
+      emitDriverStatus(profile.id, isOnline);
       return { data: { isOnline, isVerified: profile.isVerified } };
     },
   );
