@@ -319,6 +319,20 @@ export async function rxReview(
           reviewNote: body.note ?? undefined,
         },
       });
+      // The dispensing rows are the per-order audit trail (and what the H1
+      // register reads); the verdict has to land there, not only on the
+      // re-usable document.
+      await tx.orderPrescription.updateMany({
+        where: { orderId: id, status: RxStatus.PENDING },
+        data: {
+          status: RxStatus.APPROVED,
+          reviewerId: actor.userId,
+          reviewedAt: now,
+          patientName: body.patientName ?? undefined,
+          doctorName: body.doctorName ?? undefined,
+          reviewNote: body.note ?? undefined,
+        },
+      });
       // Order stays RX_REVIEW; only rxStatus flips (unblocks start-packing).
       const updated = await tx.order.updateMany({
         where: { id, status: OrderStatus.RX_REVIEW },
@@ -374,6 +388,15 @@ export async function rxReview(
       throw new AppError("CONFLICT", "Order changed concurrently — reload and retry", 409);
     }
     await restockOrder(tx, id);
+    await tx.orderPrescription.updateMany({
+      where: { orderId: id, status: RxStatus.PENDING },
+      data: {
+        status: RxStatus.REJECTED,
+        reviewerId: actor.userId,
+        reviewedAt: new Date(),
+        reviewNote: note,
+      },
+    });
     if (latestRx) {
       await tx.prescription.update({
         where: { id: latestRx.id },

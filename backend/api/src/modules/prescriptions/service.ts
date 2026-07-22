@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import {
   AlertKind,
   OrderStatus,
@@ -252,6 +252,11 @@ export async function deleteLockerPrescription(userId: string, id: string): Prom
  * only records the Prescription — `order.rxStatus` stays where it is and only
  * the pharmacist review flips it (orders/opsService).
  */
+/** P2002 — the (orderId, prescriptionId) uniqueness guard on a re-attach. */
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
 export async function attachPrescriptionToOrder(
   userId: string,
   orderId: string,
@@ -278,19 +283,30 @@ export async function attachPrescriptionToOrder(
 
   const rx = await prisma.prescription.findFirst({
     where: { id: prescriptionId, userId },
-    select: { orderId: true },
+    select: { id: true },
   });
   if (!rx) notFound();
-  if (rx.orderId !== null) {
-    throw new AppError("CONFLICT", "This prescription is already attached to an order", 409);
-  }
 
-  const attached = await prisma.prescription.updateMany({
-    where: { id: prescriptionId, userId, orderId: null },
-    data: { orderId },
-  });
-  if (attached.count === 0) {
-    throw new AppError("CONFLICT", "This prescription is already attached to an order", 409);
+  // Re-use records a NEW dispensing rather than consuming the document, so the
+  // same prescription can back several orders. The row starts PENDING even if
+  // this prescription was approved before: a pharmacist authorises a specific
+  // dispensing, so every order gets its own verdict (and its own H1 entry).
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.orderPrescription.create({
+        data: { orderId, prescriptionId, status: RxStatus.PENDING },
+      });
+      // A re-attach after a rejection puts the order back in the review queue.
+      await tx.order.updateMany({
+        where: { id: orderId, rxStatus: RxStatus.REJECTED },
+        data: { rxStatus: RxStatus.PENDING },
+      });
+    });
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new AppError("CONFLICT", "This prescription is already on this order", 409);
+    }
+    throw error;
   }
 
   const row = await prisma.prescription.findUniqueOrThrow({
