@@ -1,4 +1,11 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { AppState, Vibration, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
@@ -19,7 +26,12 @@ import {
   startBackgroundTracking,
   stopBackgroundTracking,
 } from "./backgroundLocation";
-import { setBackgroundLocationSender } from "./locationSink";
+import {
+  getLocationSinkState,
+  setBackgroundLocationSender,
+  subscribeLocationSink,
+  type LocationSinkState,
+} from "./locationSink";
 import { qk, useActiveDelivery } from "./queries";
 import { colors, font, radius, space } from "./theme";
 
@@ -41,9 +53,15 @@ interface DispatchState {
   connected: boolean;
   /** Bumped each time an offer arrives — screens can react (e.g. auto-navigate). */
   offerPing: number;
+  /** Live-location telemetry (lib/locationSink.ts) — drives the tracking banner. */
+  location: LocationSinkState;
 }
 
-const DispatchContext = createContext<DispatchState>({ connected: false, offerPing: 0 });
+const DispatchContext = createContext<DispatchState>({
+  connected: false,
+  offerPing: 0,
+  location: getLocationSinkState(),
+});
 
 /** Strong, repeated buzz so an offer is felt with the phone in a pocket/mount. */
 function alertOffer(): void {
@@ -61,6 +79,7 @@ export function DispatchProvider({ children }: { children: React.ReactNode }) {
   /** Background permission denied → tracking works only while foregrounded. */
   const [bgDenied, setBgDenied] = useState(false);
   const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
+  const location = useSyncExternalStore(subscribeLocationSink, getLocationSinkState);
 
   /** GPS should stream: signed in AND a delivery is in progress. */
   const tracking = !!token && !!active;
@@ -91,13 +110,15 @@ export function DispatchProvider({ children }: { children: React.ReactNode }) {
     });
 
     // Background-task batches (lib/backgroundLocation.ts) reuse this socket.
-    // Disconnected socket → DROP (never buffer stale pings); the Android
-    // foreground service keeps the JS process alive so it stays connected.
+    // Disconnected socket → DROP (never buffer stale pings); the sink counts
+    // the loss. The Android foreground service keeps the JS process alive so
+    // the socket normally stays connected.
     setBackgroundLocationSender((points) => {
-      if (!socket.connected) return;
+      if (!socket.connected) return false;
       for (const p of points) {
         socket.emit("location:update", { lat: p.lat, lng: p.lng, ts: p.ts });
       }
+      return true;
     });
 
     return () => {
@@ -173,7 +194,7 @@ export function DispatchProvider({ children }: { children: React.ReactNode }) {
   }, [client]);
 
   return (
-    <DispatchContext.Provider value={{ connected, offerPing }}>
+    <DispatchContext.Provider value={{ connected, offerPing, location }}>
       <View style={{ flex: 1 }}>
         {children}
         {tracking && bgDenied ? (
