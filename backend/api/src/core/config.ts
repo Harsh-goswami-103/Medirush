@@ -62,6 +62,14 @@ const envSchema = z.object({
   //   strips/sets CF-Connecting-IP), prefer that header as the rate-limit key.
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(16).optional(),
   RATE_LIMIT_TRUST_CF_HEADER: z.stringbool().default(false),
+  // - RATE_LIMIT_MAX: requests/minute per client key. The default is the real
+  //   production ceiling; it exists as an override ONLY so a load test can raise
+  //   it. A k6 run drives every virtual user from one machine, so all 50 VUs
+  //   share a rate-limit key and get 429ed long before they measure anything —
+  //   the limiter would be benchmarking itself. Raise it in the load job, never
+  //   in a real deployment. Bounded so a typo cannot silently disable limiting
+  //   in a way nobody notices.
+  RATE_LIMIT_MAX: z.coerce.number().int().min(1).max(1_000_000).default(100),
 
   // CORS origins (defaulted for local dev; required in production)
   WEB_ORIGIN: z.url().optional(),
