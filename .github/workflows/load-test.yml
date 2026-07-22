@@ -1,0 +1,161 @@
+# MedRush load test — BLUEPRINT §21.3 / §23 Phase 7 ("50 concurrent checkouts").
+# Runs backend/api/scripts/load/checkout.js (k6) against an API booted *inside*
+# the runner on a throwaway Postgres service container — the same shape the CI
+# `test`/`e2e` jobs use. Deliberately NOT run on pull_request: a 70s ramping-VU
+# run is slow, noisy and would be muted within a month. Manual dispatch +
+# nightly schedule keeps a regression signal without taxing every PR.
+#
+# Supply-chain policy (§10.5): every third-party action is pinned to a full
+# commit SHA (trailing comment names the tag the SHA was resolved from via
+# `git ls-remote`).
+#
+# Pass/fail is decided by the k6 thresholds declared in the script
+# (http_req_failed < 1%, order_errors < 2%, checkout p95 < 1.5s, http_req_duration
+# p95 < 800ms) — k6 exits 99 when a threshold is breached, which fails the job.
+#
+# Rate limiting: app.ts registers @fastify/rate-limit globally, and every VU here
+# shares the runner's IP, so all 50 would collide on one rate-limit key and get
+# 429ed before measuring anything. RATE_LIMIT_MAX (core/config.ts, default 100)
+# is raised below for this job only — the limiter must not benchmark itself.
+name: Load test
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 20:00 UTC = 01:30 IST — off-peak, and the result is waiting in the morning.
+    - cron: "0 20 * * *"
+
+# Never let two load runs overlap: concurrent runs would distort each other's
+# latency numbers. Queue rather than cancel — a half-finished run tells nothing.
+concurrency:
+  group: load-test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TURBO_TELEMETRY_DISABLED: "1"
+
+jobs:
+  load:
+    name: k6 checkout load (50 VUs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: medrush_load
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medrush_load
+      # The API must NOT boot as production: the load script authenticates with a
+      # dev token (`dev:<firebaseUid>:<phone>`), which auth.ts only accepts when
+      # Firebase is unconfigured and NODE_ENV !== "production".
+      BASE_URL: http://localhost:4000
+      # Pool size, consumed by BOTH the seeder and k6 so the two cannot
+      # disagree about how many accounts exist. The scenario is 2,750
+      # VU-seconds and `sleep(1)` floors an iteration at 1s, so the run can
+      # never exceed 2,750 iterations; 3000 leaves headroom.
+      LOAD_USERS: "3000"
+      # Load-target only. NEVER set this in a real deployment.
+      RATE_LIMIT_MAX: "1000000"
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Enable Corepack (pnpm from package.json packageManager)
+        run: corepack enable
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Prisma generate (backend/api)
+        run: pnpm --filter @medrush/api exec prisma generate
+      - name: Apply migrations
+        run: pnpm --filter @medrush/api exec prisma migrate deploy
+      - name: Seed demo catalog + users
+        # Supplies the seeded customer (seed-firebase-customer / +919876543210),
+        # their address and the non-Rx catalog the script's setup() resolves.
+        run: pnpm --filter @medrush/api db:seed
+      - name: Open the store 24×7
+        # Seeded hours are 08:00–22:00 IST and checkout 422s outside them; a
+        # 01:30 IST schedule would otherwise fail 100% of checkouts. Applied
+        # BEFORE the API boots so its 60s StoreConfig cache is never stale.
+        run: pnpm --filter @medrush/api exec prisma db execute --file ../../e2e/sql/open-store.sql --schema prisma/schema.prisma
+      - name: Seed the disposable account pool + stock
+        # One account per ITERATION, not one for the whole run. Three server
+        # rules make a shared account impossible to load-test, and none of
+        # them is a bug to work around: Cart is unique per user and POST
+        # /v1/orders deletes its lines in-transaction, so concurrent VUs would
+        # drain each other's carts (422); the §10.3 velocity rule hard-429s a
+        # 4th order per hour; and the new-account COD cap applies to every
+        # first order. Many customers placing one order each is the realistic
+        # shape anyway. Also raises stock — the demo seed's 180 units/product
+        # would be gone in seconds, turning a perf job red for a fixture reason.
+        run: pnpm --filter @medrush/api exec tsx scripts/load/seed-load-users.ts
+      - name: Build workspace packages (contracts)
+        # backend/api imports @medrush/contracts from dist.
+        run: pnpm turbo run build --filter=@medrush/contracts
+      - name: Start the API (background)
+        # tsx without watch, same as the e2e job. Logs are uploaded below so a
+        # threshold breach can be traced to 5xx/429s rather than guessed at.
+        run: pnpm --filter @medrush/api exec tsx src/server.ts > /tmp/medrush-api.log 2>&1 &
+      - name: Wait for /readyz
+        # /readyz = DB ping + migrations current + scheduler started, so this
+        # also guarantees the load run starts against a fully warm process.
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS "$BASE_URL/readyz" > /dev/null; then
+              echo "API ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "API did not become ready in 60s"
+          tail -n 200 /tmp/medrush-api.log || true
+          exit 1
+      - name: Install k6
+        uses: grafana/setup-k6-action@db07bd9765aac508ef18982e52ab937fe633a065 # v1.2.1
+      - name: Run k6 checkout load
+        # No --vus/--duration overrides: the script declares `scenarios`, which
+        # makes k6 ignore those flags. Shape and thresholds live in the script.
+        #
+        # The two ERROR gates keep the script defaults — they are the actual
+        # regression signal and are not negotiable. The two LATENCY gates are
+        # loosened, deliberately and visibly: this runner is a shared 4-vCPU
+        # box running Postgres, the API and k6 together, so the
+        # production-intent p95s would fail on the hardware rather than on the
+        # code, and a job that cries wolf nightly gets muted. Tighten these
+        # when the job points at real staging hardware.
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          k6 run \
+            -e BASE_URL="$BASE_URL" \
+            -e LOAD_USERS="$LOAD_USERS" \
+            -e P95_REQUEST_MS=2500 \
+            -e P95_CHECKOUT_MS=4000 \
+            backend/api/scripts/load/checkout.js 2>&1 | tee /tmp/k6-summary.txt
+      - name: Upload k6 summary + API log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: load-test-${{ github.run_id }}
+          path: |
+            /tmp/k6-summary.txt
+            /tmp/medrush-api.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: API log (on failure)
+        if: failure()
+        run: tail -n 200 /tmp/medrush-api.log || true
