@@ -81,7 +81,7 @@ async function createBatch(productId: string, batchNo: string, expiryInDays: num
  * that FEFO must skip, one small early-expiry, one large late-expiry), cart,
  * then a COD order over the API. qty 3 forces a FEFO split: EARLY(2) + LATE(1).
  */
-async function placeCodOrder(qty = 3) {
+async function placeCodOrder(qty = 3, tipPaise = 0) {
   const customer = await factories.user("CUSTOMER");
   await prisma.user.update({ where: { id: customer.id }, data: { name: "Test Customer" } });
   const address = await prisma.address.create({
@@ -115,7 +115,7 @@ async function placeCodOrder(qty = 3) {
     method: "POST",
     url: "/v1/orders",
     headers: { ...headersFor(customer), [IDEMPOTENCY_KEY_HEADER]: randomUUID() },
-    payload: { addressId: address.id, paymentMethod: "COD" },
+    payload: { addressId: address.id, paymentMethod: "COD", ...(tipPaise ? { tipPaise } : {}) },
   });
   expect([200, 201], res.body).toContain(res.statusCode);
   const order = res.json().data.order as { id: string; status: string; totalPaise: number };
@@ -150,8 +150,8 @@ function allocationsFromDetail(detail: {
 }
 
 /** Full pipeline up to PICKED_UP; returns everything later steps need. */
-async function driveToPickedUp(qty = 3) {
-  const fixture = await placeCodOrder(qty);
+async function driveToPickedUp(qty = 3, tipPaise = 0) {
+  const fixture = await placeCodOrder(qty, tipPaise);
   const { headers: opsHeaders } = await makeOps();
 
   const pack = await app.inject({
@@ -336,6 +336,49 @@ describe("fulfillment golden path (COD, PLACED→DELIVERED over HTTP)", () => {
     expect(txns[0]?.amountPaise).toBe(expectedCommission);
     expect(txns[0]?.balanceAfterPaise).toBe(expectedCommission);
     expect(txns[0]?.refType).toBe("ORDER");
+    await assertLedgerInvariant(txns[0]!.walletId);
+  });
+
+  it("credits a COD tip to the rider exactly once and keeps the cash tally square", async () => {
+    const TIP = 5_000;
+    const { order, delivery, driver, otp } = await driveToPickedUp(3, TIP);
+
+    // The tip rides inside totalPaise, so it is what the customer owes and what
+    // the driver collects in cash.
+    const priced = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(priced.tipPaise).toBe(TIP);
+    expect(priced.totalPaise).toBe(
+      priced.itemsPaise + priced.deliveryPaise - priced.discountPaise + TIP,
+    );
+
+    const deliver = await app.inject({
+      method: "POST",
+      url: `/v1/driver/deliveries/${delivery.id}/deliver`,
+      headers: driver.headers,
+      payload: { otp, codCollectedPaise: order.totalPaise },
+    });
+    expect(deliver.statusCode, deliver.body).toBe(200);
+
+    // Commission and tip are SEPARATE credits — never folded together.
+    const txns = await prisma.walletTxn.findMany({
+      where: { refId: order.id },
+      orderBy: { amountPaise: "desc" },
+    });
+    expect(txns).toHaveLength(2);
+    expect(txns.every((t) => t.type === "CREDIT")).toBe(true);
+    const tipTxn = txns.find((t) => t.amountPaise === TIP);
+    expect(tipTxn, "a tip credit of exactly the tip amount").toBeDefined();
+    expect(txns.filter((t) => t.amountPaise === TIP)).toHaveLength(1);
+
+    // The driver owes back the FULL collection including the tip, so the tip is
+    // earned once (via the wallet) rather than twice (cash + wallet).
+    const finalDelivery = await prisma.delivery.findUniqueOrThrow({ where: { id: delivery.id } });
+    expect(finalDelivery.codCollectedPaise).toBe(order.totalPaise);
+    expect(finalDelivery.commissionPaise! + TIP).toBe(
+      txns.reduce((sum, t) => sum + t.amountPaise, 0),
+    );
+
+    // The nightly drift audit must still reconcile after two credits.
     await assertLedgerInvariant(txns[0]!.walletId);
   });
 

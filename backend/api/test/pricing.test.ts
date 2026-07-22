@@ -110,3 +110,51 @@ describe("couponDiscountPaise", () => {
     expect(couponDiscountPaise(percent(200), 5000)).toBe(5000);
   });
 });
+
+describe("rider tip (§9.2 — added after the discount)", () => {
+  const line = (pricePaise: number, qty = 1) => [{ pricePaise, qty }];
+
+  it("adds the tip to the total without touching items, delivery or discount", () => {
+    const withoutTip = computeTotals(line(30_000), store, flat(5_000));
+    const withTip = computeTotals(line(30_000), store, flat(5_000), 4_000);
+
+    expect(withTip.itemsPaise).toBe(withoutTip.itemsPaise);
+    expect(withTip.deliveryPaise).toBe(withoutTip.deliveryPaise);
+    expect(withTip.discountPaise).toBe(withoutTip.discountPaise);
+    expect(withTip.tipPaise).toBe(4_000);
+    expect(withTip.totalPaise).toBe(withoutTip.totalPaise + 4_000);
+  });
+
+  it("does not let a PERCENT coupon discount the rider's money", () => {
+    // 10% of a 30_000 item subtotal is 3_000 whether or not a tip is present —
+    // tipping must never enlarge a discount the store funds.
+    const plain = computeTotals(line(30_000), store, percent(10));
+    const tipped = computeTotals(line(30_000), store, percent(10), 10_000);
+
+    expect(tipped.discountPaise).toBe(plain.discountPaise);
+    expect(tipped.totalPaise).toBe(plain.totalPaise + 10_000);
+  });
+
+  it("does not let a tip buy past the store minimum", () => {
+    // Items below minOrderPaise must still fail even with a large tip.
+    expect(() => computeTotals(line(5_000), store, undefined, 90_000)).toThrow(AppError);
+    try {
+      computeTotals(line(5_000), store, undefined, 90_000);
+    } catch (err) {
+      expect((err as AppError).code).toBe("MIN_ORDER_NOT_MET");
+    }
+  });
+
+  it("does not let a tip earn free delivery", () => {
+    // freeDeliveryAbovePaise is measured on items only.
+    const totals = computeTotals(line(40_000), store, undefined, 20_000);
+    expect(totals.deliveryPaise).toBe(store.deliveryBasePaise);
+    expect(totals.totalPaise).toBe(40_000 + 2_000 + 20_000);
+  });
+
+  it("defaults to zero and rejects negative or fractional paise", () => {
+    expect(computeTotals(line(30_000), store).tipPaise).toBe(0);
+    expect(() => computeTotals(line(30_000), store, undefined, -1)).toThrow(AppError);
+    expect(() => computeTotals(line(30_000), store, undefined, 10.5)).toThrow(AppError);
+  });
+});

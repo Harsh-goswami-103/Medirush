@@ -122,6 +122,7 @@ interface MappableOrder {
   discountPaise: number;
   totalPaise: number;
   couponCode: string | null;
+  tipPaise: number;
   deliveryNote: string | null;
   contactless: boolean;
   patientId: string | null;
@@ -173,6 +174,7 @@ function baseOrder(order: MappableOrder, isOwner: boolean): Order {
     discountPaise: order.discountPaise,
     totalPaise: order.totalPaise,
     couponCode: order.couponCode,
+    tipPaise: order.tipPaise,
     deliveryNote: order.deliveryNote,
     contactless: order.contactless,
     patientId: order.patientId,
@@ -396,7 +398,9 @@ async function prepareCheckout(userId: string, body: CreateOrderInput): Promise<
   }
 
   // Arithmetic + store min-order (throws MIN_ORDER_NOT_MET below the threshold).
-  const totals = computeTotals(pricedItems, storeConfig, pricingCoupon);
+  // The tip rides inside totalPaise, so it is what the customer is charged and,
+  // for COD, what the driver collects and owes back — see the credit at DELIVERED.
+  const totals = computeTotals(pricedItems, storeConfig, pricingCoupon, body.tipPaise ?? 0);
   const requiresRx = lineItems.some((li) => li.product.requiresRx);
 
   return {
@@ -494,6 +498,7 @@ async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<Cre
           itemsPaise: totals.itemsPaise,
           deliveryPaise: totals.deliveryPaise,
           discountPaise: totals.discountPaise,
+          tipPaise: totals.tipPaise,
           totalPaise: totals.totalPaise,
           couponCode: couponRow ? couponRow.code : null,
           deliveryNote,
@@ -646,6 +651,7 @@ async function createPrepaidOrder(userId: string, ctx: CheckoutContext): Promise
           itemsPaise: totals.itemsPaise,
           deliveryPaise: totals.deliveryPaise,
           discountPaise: totals.discountPaise,
+          tipPaise: totals.tipPaise,
           totalPaise: totals.totalPaise,
           couponCode: couponRow ? couponRow.code : null,
           deliveryNote,
@@ -776,6 +782,8 @@ export interface CreateOrderInput {
   contactless?: boolean;
   /** Dependent profile the order is for; validated against the caller. */
   patientId?: string;
+  /** Rider tip in paise; bounded by MAX_TIP_PAISE at the contract boundary. */
+  tipPaise?: number;
 }
 
 /* ------------------------------------------------------------- COD + fraud */

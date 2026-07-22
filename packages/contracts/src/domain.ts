@@ -63,6 +63,13 @@ export const NEAR_EXPIRY_DEFAULT_DAYS = 60;
 export const COD_REFUSAL_DISABLE_THRESHOLD = 2;
 /** Orders per hour (per user or per address-hash) before 429 + ops alert. */
 export const MAX_ORDERS_PER_HOUR = 3;
+
+/**
+ * Ceiling on a rider tip (₹1,000). Not a business rule so much as a blast
+ * radius: the tip is added to the charged total, so an unbounded value turns a
+ * mis-tap or a hostile client into a large charge the store then has to refund.
+ */
+export const MAX_TIP_PAISE = 100_000;
 /** First order of a new account: COD capped at ₹500 (`new_account_cod_cap`). Paise. */
 export const NEW_ACCOUNT_COD_CAP_PAISE = 50_000;
 

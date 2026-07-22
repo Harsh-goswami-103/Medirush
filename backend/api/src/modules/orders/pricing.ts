@@ -9,9 +9,13 @@ import { AppError } from "../../core/errors";
  *   items    = Σ price × qty
  *   delivery = items ≥ freeDeliveryAbovePaise ? 0 : deliveryBasePaise
  *   discount = coupon (FLAT | PERCENT, capped)
- *   total    = items + delivery − discount
+ *   tip      = optional rider tip, added last
+ *   total    = items + delivery − discount + tip
  *
- * Min order: items ≥ minOrderPaise, else 422 MIN_ORDER_NOT_MET.
+ * Min order: items ≥ minOrderPaise, else 422 MIN_ORDER_NOT_MET. The tip is
+ * deliberately excluded from that check and from the coupon base — tipping the
+ * rider must never buy your way past the store minimum, nor inflate a
+ * percentage discount the store would then fund.
  */
 
 export interface PricedItem {
@@ -39,6 +43,7 @@ export interface OrderTotals {
   itemsPaise: number;
   deliveryPaise: number;
   discountPaise: number;
+  tipPaise: number;
   totalPaise: number;
 }
 
@@ -67,7 +72,13 @@ export function computeTotals(
   items: readonly PricedItem[],
   storeCfg: PricingStoreConfig,
   coupon?: PricingCoupon,
+  tipPaise = 0,
 ): OrderTotals {
+  if (!Number.isSafeInteger(tipPaise) || tipPaise < 0) {
+    throw new AppError("VALIDATION_ERROR", "Tip must be a whole number of paise", 422, {
+      tipPaise,
+    });
+  }
   const itemsPaise = items.reduce((sum, item) => sum + item.pricePaise * item.qty, 0);
 
   if (itemsPaise < storeCfg.minOrderPaise) {
@@ -82,7 +93,9 @@ export function computeTotals(
   const deliveryPaise =
     itemsPaise >= storeCfg.freeDeliveryAbovePaise ? 0 : storeCfg.deliveryBasePaise;
   const discountPaise = coupon ? couponDiscountPaise(coupon, itemsPaise) : 0;
-  const totalPaise = itemsPaise + deliveryPaise - discountPaise;
+  // Tip is added AFTER the discount so a percentage coupon never discounts the
+  // rider's money.
+  const totalPaise = itemsPaise + deliveryPaise - discountPaise + tipPaise;
 
-  return { itemsPaise, deliveryPaise, discountPaise, totalPaise };
+  return { itemsPaise, deliveryPaise, discountPaise, tipPaise, totalPaise };
 }

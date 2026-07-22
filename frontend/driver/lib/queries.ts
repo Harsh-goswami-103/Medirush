@@ -138,6 +138,17 @@ export function useWalletTxns(): UseQueryResult<WalletTxn[]> {
   });
 }
 
+/**
+ * A customer tip is credited as its own ORDER-ref CREDIT alongside the delivery
+ * commission. The ledger has no tip subtype, so the note the server writes
+ * (`Tip for <orderNo>`) is the only thing that separates the two rows.
+ */
+const TIP_NOTE_PREFIX = "Tip for ";
+
+export function isTipTxn(txn: WalletTxn): boolean {
+  return txn.refType === "ORDER" && (txn.note?.startsWith(TIP_NOTE_PREFIX) ?? false);
+}
+
 /* ----------------------------------------------------------- payouts */
 
 export function usePayouts(): UseQueryResult<Payout[]> {

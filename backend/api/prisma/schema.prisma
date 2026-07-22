@@ -389,6 +389,14 @@ model Order {
   discountPaise   Int           @default(0)
   totalPaise      Int
   couponCode      String?
+  /**
+   * Rider tip, included in `totalPaise`. For COD that means the driver collects
+   * it as cash AND owes it back with the rest of the collection
+   * (codCollectedPaise === totalPaise), so the wallet credit at DELIVERED pays
+   * it out exactly once. Credited as its own WalletTxn, never folded into
+   * commission.
+   */
+  tipPaise        Int           @default(0)
   deliveryNote    String?                           // customer note to the rider (≤200 chars)
   contactless     Boolean       @default(false)     // leave at door, no handover
   requiresRx      Boolean       @default(false)
