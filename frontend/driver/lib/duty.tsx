@@ -30,6 +30,7 @@ export function DutyProvider({ children }: { children: React.ReactNode }) {
   const [verified, setVerified] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const resynced = useRef(false);
+  const hadToken = useRef(false);
 
   const setOnline = useCallback(
     async (next: boolean) => {
@@ -57,6 +58,24 @@ export function DutyProvider({ children }: { children: React.ReactNode }) {
       if (persisted) await setOnline(true).catch(() => undefined);
     })();
   }, [token, setOnline]);
+
+  // Sign-out: drop the cached "online" so the next sign-in on this device can't
+  // resurrect a stale shift via the resync above. Only on a token that went
+  // away — at cold start `token` is null until auth resolves, and clearing then
+  // would erase the flag a restart mid-shift depends on.
+  useEffect(() => {
+    if (token) {
+      hadToken.current = true;
+      return;
+    }
+    if (!hadToken.current) return;
+    hadToken.current = false;
+    resynced.current = false;
+    setOnlineState(false);
+    setVerified(null);
+    setError(null);
+    void AsyncStorage.removeItem(ONLINE_KEY).catch(() => undefined);
+  }, [token]);
 
   return (
     <DutyContext.Provider value={{ online, verified, busy: setOnlineMutation.isPending, error, setOnline }}>

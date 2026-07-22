@@ -184,6 +184,22 @@ export function emitOfferCancelled(driverProfileId: string, payload: OfferCancel
   io.to(driverRoom(driverProfileId)).emit("offer:cancelled", payload);
 }
 
+/**
+ * `driver:status` to the ops room — presence changed. Fire-and-forget like
+ * every emit helper here: dispatch eligibility comes from the DriverProfile row
+ * (rankCandidates re-reads it per wave), so a dropped emit costs a stale fleet
+ * view until its next poll, never a mis-dispatch.
+ */
+export function emitDriverStatus(driverProfileId: string, isOnline: boolean): void {
+  const io = getIo();
+  if (!io) return;
+  io.to(OPS_ROOM).emit("driver:status", {
+    driverProfileId,
+    isOnline,
+    at: new Date().toISOString(),
+  });
+}
+
 /** `driver:location` to an order's room — live position while ASSIGNED/PICKED_UP. */
 export function emitDriverLocation(payload: DriverLocationEvent): void {
   const io = getIo();

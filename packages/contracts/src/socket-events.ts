@@ -115,6 +115,19 @@ export const OrderUpdateEventSchema = z.object({
 });
 export type OrderUpdateEvent = z.infer<typeof OrderUpdateEventSchema>;
 
+/**
+ * `driver:status` — a driver went on/off duty. Emitted to the `ops` room so the
+ * fleet view reflects presence live instead of waiting for its next poll.
+ * Dispatch does NOT depend on this: `rankCandidates` reads `isOnline` from the
+ * database on every wave, so eligibility changes the moment the row is written.
+ */
+export const DriverStatusEventSchema = z.object({
+  driverProfileId: IdSchema,
+  isOnline: z.boolean(),
+  at: IsoDateTimeSchema,
+});
+export type DriverStatusEvent = z.infer<typeof DriverStatusEventSchema>;
+
 /** Known `alert.kind` values (open set — always handle unknown kinds generically). */
 export const AlertKind = {
   /** Order stuck past a watchdog threshold (PLACED>10m, READY>7m, PICKED_UP>40m). */
@@ -165,6 +178,7 @@ export interface ServerToClientEvents {
   "offer:cancelled": (payload: OfferCancelledEvent) => void;
   "order:new": (payload: OrderNewEvent) => void;
   "order:update": (payload: OrderUpdateEvent) => void;
+  "driver:status": (payload: DriverStatusEvent) => void;
   alert: (payload: AlertEvent) => void;
   /** Graceful shutdown broadcast (§11) — reconnect with backoff; no payload. */
   "server:restarting": () => void;
