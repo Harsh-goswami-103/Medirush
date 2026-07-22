@@ -128,6 +128,20 @@ export const ProductSummarySchema = z.object({
 });
 export type ProductSummary = z.infer<typeof ProductSummarySchema>;
 
+/**
+ * Structured medical information (§17 PDP). Pharmacist-authored free text;
+ * empty string means "not documented" and the client hides that section.
+ */
+export const ProductMedicalInfoSchema = z.object({
+  uses: z.string(),
+  directions: z.string(),
+  sideEffects: z.string(),
+  storageInfo: z.string(),
+  warnings: z.string(),
+  manufacturer: z.string().nullable(),
+});
+export type ProductMedicalInfo = z.infer<typeof ProductMedicalInfoSchema>;
+
 /** Full product detail (GET /v1/products/:slug). */
 export const ProductSchema = ProductSummarySchema.extend({
   description: z.string(),
@@ -138,8 +152,22 @@ export const ProductSchema = ProductSummarySchema.extend({
   composition: z.string(),
   /** GST-inclusive pricing; rate shown for transparency/invoice preview. */
   gstRatePct: GstRateSchema,
-});
+}).extend(ProductMedicalInfoSchema.shape);
 export type Product = z.infer<typeof ProductSchema>;
+
+/* -------------------------------------------------- health-concern browse */
+
+/** "Shop by health concern" — fever, cold & cough, diabetes care, … */
+export const HealthConcernSchema = z.object({
+  id: IdSchema,
+  name: z.string(),
+  slug: SlugSchema,
+  imageUrl: z.url().nullable(),
+  sortOrder: z.number().int(),
+});
+export type HealthConcern = z.infer<typeof HealthConcernSchema>;
+export const ListHealthConcernsResponseSchema = envelope(z.array(HealthConcernSchema));
+export const ConcernParamsSchema = z.object({ slug: SlugSchema });
 
 /**
  * Tri-state boolean query param. Unset → no filter; `"true"`/`"1"` → true;
@@ -164,6 +192,8 @@ export const ProductListQuerySchema = CursorQuerySchema.extend({
   /** Category slug filter. */
   category: SlugSchema.optional(),
   search: z.string().trim().min(1).max(100).optional(),
+  /** Health-concern slug filter (shop-by-concern browse). */
+  concern: SlugSchema.optional(),
   sort: ProductSortSchema.optional(),
   /** true → only in-stock; false → only out-of-stock (rarely useful). */
   inStock: TriStateBoolQuery,
