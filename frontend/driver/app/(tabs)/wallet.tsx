@@ -1,8 +1,8 @@
 import { RefreshControl, ScrollView, View } from "react-native";
 import { useRouter } from "expo-router";
 import { MIN_PAYOUT_PAISE, type TxnType, type WalletTxn } from "@medrush/contracts";
-import { useWallet, useWalletTxns } from "@/lib/queries";
-import { Button, Card, Divider, EmptyState, Loading, Row, Txt } from "@/components/ui";
+import { isTipTxn, useWallet, useWalletTxns } from "@/lib/queries";
+import { Badge, Button, Card, Divider, EmptyState, Loading, Row, Txt } from "@/components/ui";
 import { colors, font, space } from "@/lib/theme";
 import { dateTime, rupees } from "@/lib/format";
 
@@ -66,7 +66,10 @@ export default function WalletScreen() {
         </Card>
       ) : (txns.data?.length ?? 0) === 0 ? (
         <Card style={{ paddingVertical: space.xl }}>
-          <EmptyState title="No transactions yet" subtitle="Delivery earnings will show up here." />
+          <EmptyState
+            title="No transactions yet"
+            subtitle="Delivery earnings and customer tips will show up here."
+          />
         </Card>
       ) : (
         <Card>
@@ -92,23 +95,38 @@ const txnLabel: Record<TxnType, string> = {
 
 function TxnRow({ txn }: { txn: WalletTxn }) {
   const isCredit = CREDIT_TYPES.includes(txn.type);
+  const isTip = isTipTxn(txn);
+  const title = txn.note ?? txnLabel[txn.type];
   return (
-    <Row style={{ justifyContent: "space-between", paddingVertical: space.sm }}>
-      <View style={{ flex: 1 }}>
-        <Txt weight="600">{txn.note ?? txnLabel[txn.type]}</Txt>
-        <Txt color="faint" size={font.xs}>
-          {dateTime(txn.createdAt)}
-        </Txt>
-      </View>
-      <View style={{ alignItems: "flex-end" }}>
-        <Txt color={isCredit ? "success" : "danger"} weight="800">
-          {isCredit ? "+" : "−"}
-          {rupees(txn.amountPaise)}
-        </Txt>
-        <Txt color="faint" size={font.xs}>
-          bal {rupees(txn.balanceAfterPaise)}
-        </Txt>
-      </View>
-    </Row>
+    <View
+      accessible
+      accessibilityLabel={`${title}, ${isCredit ? "credited" : "debited"} ${rupees(
+        txn.amountPaise,
+      )}, ${dateTime(txn.createdAt)}. Balance ${rupees(txn.balanceAfterPaise)}`}
+      style={{ paddingVertical: space.sm }}
+    >
+      <Row style={{ justifyContent: "space-between" }}>
+        <View style={{ flex: 1, gap: space.xs }}>
+          <Row gap={space.sm}>
+            <Txt weight="600" style={{ flexShrink: 1 }}>
+              {title}
+            </Txt>
+            {isTip ? <Badge label="TIP" tone="success" /> : null}
+          </Row>
+          <Txt color="faint" size={font.xs}>
+            {dateTime(txn.createdAt)}
+          </Txt>
+        </View>
+        <View style={{ alignItems: "flex-end" }}>
+          <Txt color={isCredit ? "success" : "danger"} weight="800">
+            {isCredit ? "+" : "−"}
+            {rupees(txn.amountPaise)}
+          </Txt>
+          <Txt color="faint" size={font.xs}>
+            bal {rupees(txn.balanceAfterPaise)}
+          </Txt>
+        </View>
+      </Row>
+    </View>
   );
 }

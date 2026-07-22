@@ -708,6 +708,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                       tone="good"
                     />
                   )}
+                  {order.tipPaise > 0 && (
+                    <BillRow label="Rider tip" value={formatPaise(order.tipPaise)} />
+                  )}
                   <div className="mt-2 flex items-center justify-between border-t border-line pt-2 text-base font-bold text-ink-900">
                     <span>Total</span>
                     <span className="tabular-nums">{formatPaise(order.totalPaise)}</span>

@@ -314,6 +314,22 @@ export const driverRoutes: FastifyPluginAsync = async (app) => {
           `Delivery commission for ${order.orderNo}`,
         );
 
+        // The tip is a SEPARATE credit, never folded into commission: payouts,
+        // the ledger and the nightly drift audit all stay readable, and a rider
+        // can see what they actually earned in tips. For COD the customer's tip
+        // arrived as cash the driver already holds — but codCollectedPaise is
+        // the FULL total, so that cash is owed back with the rest of the
+        // collection and this credit pays it out exactly once.
+        if (order.tipPaise > 0) {
+          await creditWallet(
+            tx,
+            delivery.driverId,
+            order.tipPaise,
+            { type: "ORDER", id: order.id },
+            `Tip for ${order.orderNo}`,
+          );
+        }
+
         await tx.delivery.update({
           where: { id: delivery.id },
           data: {
@@ -570,7 +586,7 @@ export const driverRoutes: FastifyPluginAsync = async (app) => {
       const rows = await getPrisma().delivery.findMany({
         where: { driverId: profile.id, deliveredAt: { gte: start, lt: end } },
         orderBy: { deliveredAt: "desc" },
-        include: { order: { select: { orderNo: true } } },
+        include: { order: { select: { orderNo: true, tipPaise: true } } },
       });
 
       const deliveries: DriverHistoryEntry[] = rows.map((d) => ({
@@ -580,11 +596,13 @@ export const driverRoutes: FastifyPluginAsync = async (app) => {
         deliveredAt: (d.deliveredAt as Date).toISOString(),
         distanceM: d.distanceM,
         commissionPaise: d.commissionPaise ?? 0,
+        tipPaise: d.order.tipPaise,
         codCollectedPaise: d.codCollectedPaise,
       }));
       const totals = {
         count: deliveries.length,
         commissionPaise: deliveries.reduce((sum, d) => sum + d.commissionPaise, 0),
+        tipPaise: deliveries.reduce((sum, d) => sum + d.tipPaise, 0),
         codCollectedPaise: deliveries.reduce((sum, d) => sum + (d.codCollectedPaise ?? 0), 0),
       };
       return { data: { date: dateStr, deliveries, totals } };

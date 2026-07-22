@@ -112,6 +112,7 @@ describe("order create", () => {
       discountPaise: 0,
       totalPaise: 26_900,
       couponCode: null,
+      tipPaise: 0,
       deliveryNote: null,
       contactless: false,
       patientId: null,

@@ -190,6 +190,9 @@ export const DriverHistoryEntrySchema = z.object({
   deliveredAt: IsoDateTimeSchema,
   distanceM: MetersSchema,
   commissionPaise: PaiseSchema,
+  /** Rider tip on this order; 0 when the customer did not tip. Credited to the
+   *  wallet separately from commission, so it is reported separately here too. */
+  tipPaise: PaiseSchema,
   /** Null for prepaid deliveries. */
   codCollectedPaise: PaiseSchema.nullable(),
 });
@@ -201,6 +204,8 @@ export const DriverHistorySchema = z.object({
   totals: z.object({
     count: CountSchema,
     commissionPaise: PaiseSchema,
+    /** Tips earned that day, excluded from commissionPaise. */
+    tipPaise: PaiseSchema,
     /** Cash the driver owes the store from COD collections that day. */
     codCollectedPaise: PaiseSchema,
   }),

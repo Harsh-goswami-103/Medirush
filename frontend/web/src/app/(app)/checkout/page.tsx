@@ -21,7 +21,7 @@ import type {
   ServiceabilityResult,
   ValidateCartResult,
 } from "@medrush/contracts";
-import { IDEMPOTENCY_KEY_HEADER } from "@medrush/contracts";
+import { IDEMPOTENCY_KEY_HEADER, MAX_TIP_PAISE } from "@medrush/contracts";
 import { api, ApiError, apiErrorMessage, qs, type Envelope } from "@/lib/api";
 import { API_BASE_URL } from "@/lib/env";
 import { useAuth } from "@/lib/auth";
@@ -97,6 +97,9 @@ const RELATION_LABEL: Record<PatientRelation, string> = {
   OTHER: "Other",
 };
 
+const TIP_PRESETS_PAISE = [1000, 2000, 3000];
+const MAX_TIP_RUPEES = MAX_TIP_PAISE / 100;
+
 /** Teal-gradient CTA. `disabled:bg-none` lets the Button's disabled colour win. */
 const CTA =
   "press bg-gradient-to-r from-primary-600 to-primary-500 shadow-glow hover:from-primary-700 hover:to-primary-600 disabled:bg-none disabled:shadow-none";
@@ -116,6 +119,11 @@ export default function CheckoutPage() {
   const [couponError, setCouponError] = useState<string | null>(null);
   const [deliveryNote, setDeliveryNote] = useState("");
   const [contactless, setContactless] = useState(false);
+  /** Tip selection — paise for a preset, "custom" while the amount box is open.
+   *  Starts at 0: a pre-selected tip would be opting the customer in for them. */
+  const [tipChoice, setTipChoice] = useState<number | "custom">(0);
+  /** Whole rupees, digits only, already clamped to MAX_TIP_RUPEES. */
+  const [customTip, setCustomTip] = useState("");
   // One idempotency key per checkout session — a manual retry replays (never
   // double-creates); a fresh checkout (new mount after navigation) gets a new key.
   const [idempotencyKey] = useState(() => crypto.randomUUID());
@@ -232,11 +240,23 @@ export default function CheckoutPage() {
 
   /* --------------------------------------------------------- COD gating */
 
+  /* ------------------------------------------------------------- tip */
+
+  const tipPaise =
+    tipChoice === "custom" ? Math.min(MAX_TIP_PAISE, Number(customTip || 0) * 100) : tipChoice;
+
+  /* --------------------------------------------------------- COD gating */
+
+  // The tip is part of what the driver collects in cash, so the COD ceiling has
+  // to be measured against the tip-inclusive total — the server does exactly
+  // that (assertCodAllowed reads the same totals). Comparing the tip-free total
+  // here would offer COD and then have the order rejected on submit.
+  const codComparablePaise = (totals?.totalPaise ?? 0) + tipPaise;
   const codAllowed =
     Boolean(store?.featureFlags.codEnabled) &&
     Boolean(totals) &&
     Boolean(store) &&
-    totals!.totalPaise <= store!.codLimitPaise;
+    codComparablePaise <= store!.codLimitPaise;
 
   // If COD becomes unavailable (flag off / over limit), fall back to PREPAID.
   useEffect(() => {
@@ -247,6 +267,11 @@ export default function CheckoutPage() {
   useEffect(() => {
     if (paymentMethod === "COD" && contactless) setContactless(false);
   }, [paymentMethod, contactless]);
+
+  function pickTip(choice: number | "custom") {
+    setTipChoice(choice);
+    if (choice !== "custom") setCustomTip("");
+  }
 
   /* ------------------------------------------------------- mutations */
 
@@ -317,6 +342,7 @@ export default function CheckoutPage() {
         ...(deliveryNote.trim() ? { deliveryNote: deliveryNote.trim() } : {}),
         ...(contactless ? { contactless: true } : {}),
         ...(patientId ? { patientId } : {}),
+        ...(tipPaise > 0 ? { tipPaise } : {}),
       };
       const result = await createOrder(body, token, idempotencyKey);
       const orderId = result.order.id;
@@ -465,6 +491,9 @@ export default function CheckoutPage() {
 
   const canPlace = blockReason === null && !placeOrder.isPending;
   const payLabel = requiresRx || paymentMethod === "COD" ? "Place order" : "Pay & place order";
+  // The coupon quote prices the cart only — the tip is never part of it, so it is
+  // added on top of whichever total is authoritative for the cart.
+  const payablePaise = (quote ? quote.totalPaise : (totals?.totalPaise ?? 0)) + tipPaise;
 
   /* ------------------------------------------------------------ render */
 
@@ -881,6 +910,52 @@ export default function CheckoutPage() {
             </div>
           </Section>
 
+          {/* ----------------------------------------------- rider tip */}
+          <Section title="Tip your rider">
+            <div className="glass space-y-3 rounded-xl2 p-3.5 shadow-card2">
+              <p className="text-xs text-ink-600">
+                Tipping is optional — the full amount goes to the delivery partner who brings your
+                order.
+              </p>
+              <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Rider tip">
+                <TipChip label="No tip" active={tipChoice === 0} onSelect={() => pickTip(0)} />
+                {TIP_PRESETS_PAISE.map((p) => (
+                  <TipChip
+                    key={p}
+                    label={formatPaise(p)}
+                    active={tipChoice === p}
+                    onSelect={() => pickTip(p)}
+                  />
+                ))}
+                <TipChip
+                  label="Custom"
+                  active={tipChoice === "custom"}
+                  onSelect={() => pickTip("custom")}
+                />
+              </div>
+              {tipChoice === "custom" && (
+                <Field label="Tip amount (₹)" hint={`Up to ${formatPaise(MAX_TIP_PAISE)}`}>
+                  <TextInput
+                    inputMode="numeric"
+                    placeholder="50"
+                    value={customTip}
+                    onChange={(e) => {
+                      const digits = e.target.value.replace(/\D/g, "").slice(0, 7);
+                      setCustomTip(
+                        digits === "" ? "" : String(Math.min(Number(digits), MAX_TIP_RUPEES)),
+                      );
+                    }}
+                  />
+                </Field>
+              )}
+              <p className="text-xs text-ink-600" aria-live="polite">
+                {tipPaise > 0
+                  ? `${formatPaise(tipPaise)} added for your delivery partner.`
+                  : "No tip added."}
+              </p>
+            </div>
+          </Section>
+
           {/* -------------------------------------------------- payment */}
           <Section title="Payment method">
             <div className="space-y-2" role="radiogroup" aria-label="Payment method">
@@ -912,8 +987,10 @@ export default function CheckoutPage() {
                   <p className="text-xs text-ink-600">
                     {!store?.featureFlags.codEnabled
                       ? "Currently unavailable"
-                      : totals && store && totals.totalPaise > store.codLimitPaise
-                        ? `Not available above ${formatPaise(store.codLimitPaise)}`
+                      : totals && store && codComparablePaise > store.codLimitPaise
+                        ? `Not available above ${formatPaise(store.codLimitPaise)}${
+                            tipPaise > 0 ? " (including the tip)" : ""
+                          }`
                         : "Pay the driver on delivery"}
                   </p>
                 </div>
@@ -939,11 +1016,12 @@ export default function CheckoutPage() {
                     </span>
                   </div>
                 )}
+                {tipPaise > 0 && <BillRow label="Rider tip" value={formatPaise(tipPaise)} />}
                 <div className="my-2 border-t border-line" />
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-semibold text-ink-900">To pay</span>
                   <span className="text-lg font-semibold tabular-nums text-ink-900">
-                    {formatPaise(quote ? quote.totalPaise : totals.totalPaise)}
+                    {formatPaise(payablePaise)}
                   </span>
                 </div>
                 {!quote && coupon.trim() !== "" && (
@@ -977,7 +1055,7 @@ export default function CheckoutPage() {
             disabled={!canPlace}
             onClick={() => placeOrder.mutate()}
           >
-            {payLabel} · {formatPaise(quote ? quote.totalPaise : (totals?.totalPaise ?? 0))}
+            {payLabel} · {formatPaise(payablePaise)}
           </Button>
         </div>
       )}
@@ -1207,6 +1285,33 @@ function PatientChip({
       >
         {label}
         {sub && <span className="text-xs font-normal text-ink-600">· {sub}</span>}
+      </span>
+    </label>
+  );
+}
+
+/** Radio pill for the rider-tip presets — same chip treatment as PatientChip. */
+function TipChip({
+  label,
+  active,
+  onSelect,
+}: {
+  label: string;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <label className="press cursor-pointer">
+      <input type="radio" name="tip" className="peer sr-only" checked={active} onChange={onSelect} />
+      <span
+        className={cn(
+          "flex min-h-[44px] items-center rounded-pill border px-4 text-sm font-medium",
+          "border-line bg-surface text-ink-600 shadow-sm",
+          "peer-checked:border-primary-600 peer-checked:bg-primary-50 peer-checked:text-primary-800 peer-checked:shadow-glow",
+          "peer-focus-visible:ring-2 peer-focus-visible:ring-primary-600 peer-focus-visible:ring-offset-2",
+        )}
+      >
+        {label}
       </span>
     </label>
   );

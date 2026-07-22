@@ -212,6 +212,9 @@ export async function getOpsDetail(id: string): Promise<OpsOrderDetailWithMarker
     couponCode: order.couponCode,
     deliveryNote: order.deliveryNote,
     contactless: order.contactless,
+    // Part of totalPaise — packers and the COD cash tally must see the same
+    // figure the customer was charged.
+    tipPaise: order.tipPaise,
     // Who the order is for — pharmacists need this for the H1 register.
     patientId: order.patientId,
     patientName: order.patient?.name ?? null,

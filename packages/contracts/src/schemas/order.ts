@@ -17,6 +17,7 @@
  * `Idempotency-Key` header (UUID, replayed for 24h) — see IDEMPOTENCY_KEY_HEADER.
  */
 import { z } from "zod";
+import { MAX_TIP_PAISE } from "../domain";
 import {
   ActorTypeSchema,
   OrderStatusSchema,
@@ -92,6 +93,8 @@ export const OrderSchema = z.object({
   /** `items + delivery − discount`. Recomputed server-side; client totals are ignored. */
   totalPaise: PaiseSchema,
   couponCode: z.string().nullable(),
+  /** Rider tip, already included in `totalPaise`. */
+  tipPaise: PaiseSchema,
   /** Customer note to the rider ("blue gate", "call on arrival"); ≤200 chars. */
   deliveryNote: z.string().nullable(),
   /** Leave-at-door delivery — no handover. */
@@ -210,6 +213,11 @@ export const CreateOrderBodySchema = z.object({
   contactless: z.boolean().optional(),
   /** Dependent this order is for; must belong to the caller. */
   patientId: IdSchema.optional(),
+  /**
+   * Rider tip in paise, added to the charged total. Capped at MAX_TIP_PAISE;
+   * excluded from the min-order check and from the coupon base.
+   */
+  tipPaise: z.number().int().min(0).max(MAX_TIP_PAISE).optional(),
 });
 export type CreateOrderBody = z.infer<typeof CreateOrderBodySchema>;
 
