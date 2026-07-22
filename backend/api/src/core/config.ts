@@ -69,6 +69,16 @@ const envSchema = z.object({
 
   // Optional integrations
   RESEND_API_KEY: z.string().min(1).optional(),
+
+  // Uptime monitoring (§24 observability) — both optional, config-stub posture:
+  // - UPTIME_CHECK_URL: what the 5-minute self-check GETs. Unset → the LOCAL
+  //   readiness probe (`http://127.0.0.1:<PORT>/readyz`), which catches a wedged
+  //   process/DB from inside; point it at the public URL to cover the edge too.
+  // - UPTIME_ALERT_WEBHOOK_URL: Slack-compatible incoming webhook the job POSTs
+  //   `{ text }` to on failure. Unset → the job is not scheduled at all, so
+  //   dev/CI stay silent (same posture as the backup gate).
+  UPTIME_CHECK_URL: z.url().optional(),
+  UPTIME_ALERT_WEBHOOK_URL: z.url().optional(),
 });
 
 /** Keys that MUST be present when NODE_ENV === "production". */
