@@ -18,6 +18,16 @@ if (dsn) {
     replaysSessionSampleRate: 0,
     replaysOnErrorSampleRate: 0,
   });
+} else if (process.env.NODE_ENV === "production") {
+  // Both the DSN and NODE_ENV are inlined at build time, so this branch is
+  // compiled away entirely in dev — a missing DSN is normal there and a warning
+  // on every page load would just train people to ignore it. In a production
+  // bundle it is a real defect worth surfacing in the browser console.
+  console.warn(
+    "sentry disabled — NEXT_PUBLIC_SENTRY_DSN was not set when this production bundle " +
+      "was built, so browser errors will not be reported. Fix: set NEXT_PUBLIC_SENTRY_DSN " +
+      "at build time and redeploy.",
+  );
 }
 
 /** App Router navigation instrumentation (Next 15.3+). */
