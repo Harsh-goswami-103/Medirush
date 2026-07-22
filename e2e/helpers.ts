@@ -1,8 +1,32 @@
-import { expect, type APIRequestContext } from "@playwright/test";
+import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { API_URL, DEMO_CUSTOMER_TOKEN } from "./stack";
 
 /** MR-YYMMDD-NNNN order numbers minted by the API. */
 export const ORDER_NO_RE = /^MR-\d{6}-\d{4}$/;
+
+/** Backend dev bearer shape — `dev:<firebaseUid>:<phoneE164>`. */
+const DEV_TOKEN_RE = /dev:[^:\s"]+:\+?\d{6,}/;
+
+/**
+ * Security regression guard: no bearer may reach Web Storage in either app.
+ * Both stores are scanned by VALUE shape rather than by the single key older
+ * builds used, so a rename or a new mirror is caught too.
+ */
+export async function expectNoStoredBearer(page: Page): Promise<void> {
+  const leaked = await page.evaluate((source) => {
+    const re = new RegExp(source);
+    const hits: string[] = [];
+    for (const store of [window.localStorage, window.sessionStorage]) {
+      for (let i = 0; i < store.length; i += 1) {
+        const key = store.key(i) ?? "";
+        const value = store.getItem(key) ?? "";
+        if (re.test(key) || re.test(value)) hits.push(key);
+      }
+    }
+    return hits;
+  }, DEV_TOKEN_RE.source);
+  expect(leaked, "bearer token found in localStorage/sessionStorage").toEqual([]);
+}
 
 /**
  * The demo customer's cart is server-side and survives dev sessions — empty it

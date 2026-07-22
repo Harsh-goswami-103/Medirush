@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { ORDER_NO_RE, resetDemoCart } from "./helpers";
+import { expectNoStoredBearer, ORDER_NO_RE, resetDemoCart } from "./helpers";
 import { OPS_URL } from "./stack";
 
 /**
@@ -34,9 +34,13 @@ test("customer places a COD order for a non-Rx product (golden path)", async ({
   await page.goto("/login");
   await page.getByRole("button", { name: "Continue as demo customer" }).click();
   await page.waitForURL("**/account");
+  await expectNoStoredBearer(page);
 
-  // Browse the seeded catalog and open the product.
-  await page.goto("/shop");
+  // Browse the seeded catalog and open the product. In-app navigation, never
+  // page.goto: the bearer is memory-only, so a full reload signs the dev
+  // session out (frontend/web/src/lib/auth.tsx).
+  await page.getByRole("link", { name: "Home" }).click();
+  await page.waitForURL("**/shop");
   const productCard = page.getByRole("link", { name: new RegExp(PRODUCT.name, "i") });
   await expect(productCard).toBeVisible();
   await productCard.click();
@@ -89,6 +93,7 @@ test("ops pharmacist sees the new order on the board", async ({ page }) => {
   await page.goto(`${OPS_URL}/login`);
   await page.getByRole("button", { name: /inventory \(pharmacist\)/i }).click();
   await page.waitForURL("**/orders");
+  await expectNoStoredBearer(page);
 
   // The board's default filter is "New" (status PLACED) — the fresh COD order
   // must be listed with its status and payment method.

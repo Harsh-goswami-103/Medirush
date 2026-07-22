@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { ORDER_NO_RE, resetDemoCart } from "./helpers";
+import { expectNoStoredBearer, ORDER_NO_RE, resetDemoCart } from "./helpers";
 import { OPS_URL } from "./stack";
 
 /**
@@ -55,10 +55,17 @@ test("customer places a COD order for an Rx product and uploads a prescription",
   await page.goto("/login");
   await page.getByRole("button", { name: "Continue as demo customer" }).click();
   await page.waitForURL("**/account");
+  await expectNoStoredBearer(page);
 
-  // Straight to the Schedule-H product — storefront browsing is already
-  // covered by golden-path.spec.ts; here the Rx marking is what matters.
-  await page.goto(`/p/${PRODUCT.slug}`);
+  // Search straight to the Schedule-H product — storefront browsing is already
+  // covered by golden-path.spec.ts; here the Rx marking is what matters. In-app
+  // navigation, never page.goto: the bearer is memory-only, so a full reload
+  // signs the dev session out (frontend/web/src/lib/auth.tsx).
+  await page.getByRole("link", { name: "Home" }).click();
+  await page.waitForURL("**/shop");
+  await page.getByPlaceholder("Search medicines & health products").fill("Azithral");
+  await page.getByRole("link", { name: new RegExp(PRODUCT.name, "i") }).first().click();
+  await page.waitForURL(`**/p/${PRODUCT.slug}`);
   await expect(page.getByRole("heading", { name: PRODUCT.name }).first()).toBeVisible();
   await expect(page.getByText("Rx", { exact: true }).first()).toBeVisible();
   // Scoped to the sticky action bar — the substitutes/similar rails render
@@ -112,6 +119,7 @@ test("pharmacist approves the Rx, packs FEFO and marks the order ready", async (
   await page.goto(`${OPS_URL}/login`);
   await page.getByRole("button", { name: /inventory \(pharmacist\)/i }).click();
   await page.waitForURL("**/orders");
+  await expectNoStoredBearer(page);
 
   // The board's default pill is "New" (PLACED) — Rx orders queue under
   // "Rx review". Open the fresh order from there.
