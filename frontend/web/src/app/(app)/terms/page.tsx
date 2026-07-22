@@ -1,10 +1,27 @@
 import type { Metadata } from "next";
 import { TopBar } from "@/components/AppShell";
-import { LastUpdated, LegalList, LegalProse, LegalSection, Op } from "@/components/legal";
+import { LastUpdated, LegalContents, LegalList, LegalProse, LegalSection, Op } from "@/components/legal";
 
 export const metadata: Metadata = { title: "Terms & Conditions — MedRush" };
 
 const LAST_UPDATED = "2026-07-12";
+
+/** Jump-list labels — must match each <LegalSection title> verbatim. */
+const SECTIONS = [
+  "Eligibility",
+  "Your account",
+  "Ordering & prescriptions",
+  "Pricing, payment & COD",
+  "Delivery & serviceability",
+  "Cancellation & refunds",
+  "No medical advice",
+  "Prohibited use",
+  "Intellectual property",
+  "Disclaimers & limitation of liability",
+  "Governing law & jurisdiction",
+  "Changes to these terms",
+  "Contact",
+];
 
 /**
  * Terms & Conditions for the MedRush pharmacy delivery service. Static prose;
@@ -16,8 +33,8 @@ export default function TermsPage() {
     <div>
       <TopBar back title="Terms & Conditions" />
       <LegalProse>
-        <div className="space-y-2">
-          <p className="text-sm leading-6 text-ink-600">
+        <div className="space-y-3">
+          <p className="text-[15px] leading-7 text-ink-600">
             These Terms &amp; Conditions govern your use of the MedRush app and delivery service,
             operated by <Op>legal entity name</Op> (&ldquo;MedRush&rdquo;, &ldquo;we&rdquo;,
             &ldquo;us&rdquo;), a licensed pharmacy. By creating an account or placing an order, you
@@ -25,6 +42,8 @@ export default function TermsPage() {
           </p>
           <LastUpdated date={LAST_UPDATED} />
         </div>
+
+        <LegalContents items={SECTIONS} />
 
         <LegalSection title="Eligibility">
           <p>

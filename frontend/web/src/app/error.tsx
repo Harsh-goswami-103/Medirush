@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import Link from "next/link";
 import * as Sentry from "@sentry/nextjs";
 import { whatsappUrl } from "@/lib/env";
 import { Button, WhatsAppIcon } from "@/components/ui";
@@ -25,29 +26,65 @@ export default function ErrorPage({
   const supportUrl = whatsappUrl("Hi, something went wrong in the MedRush app.");
 
   return (
-    <div className="flex min-h-[70dvh] flex-col items-center justify-center gap-3 px-6 text-center">
-      <p className="text-4xl" aria-hidden>
-        ⚕️
-      </p>
-      <h1 className="text-lg font-semibold text-ink-900">Something went wrong</h1>
-      <p className="max-w-xs text-sm text-ink-600">
-        Sorry about that — an unexpected error occurred. Your orders and cart are safe.
-      </p>
-      <Button className="mt-2 w-full max-w-xs" onClick={reset}>
-        Try again
-      </Button>
-      {supportUrl && (
-        <a
-          href={supportUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex w-full max-w-xs items-center justify-center gap-2 rounded-input border border-success/30 bg-success/5 px-3.5 py-2 text-sm font-medium text-success hover:bg-success/10"
+    <div className="bg-mesh flex min-h-[70dvh] items-center justify-center px-5 py-10">
+      <div className="glass w-full max-w-sm animate-reveal-up rounded-sheet2 p-7 text-center shadow-glass">
+        <div
+          className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl2 bg-gradient-to-br from-primary-600 to-primary-500 text-white shadow-glow"
+          aria-hidden
         >
-          <WhatsAppIcon />
-          Chat with support
-        </a>
-      )}
-      {error.digest && <p className="mt-1 text-xs text-ink-400">Support code: {error.digest}</p>}
+          <svg
+            viewBox="0 0 24 24"
+            className="h-8 w-8"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M12 3l7.5 3v5.2c0 4.4-3 8.3-7.5 9.8-4.5-1.5-7.5-5.4-7.5-9.8V6L12 3z" />
+            <path d="M12 8.5v4M12 15.8v.2" />
+          </svg>
+        </div>
+
+        <h1 className="mt-5 text-2xl font-bold tracking-tight text-ink-900" role="alert">
+          Something went wrong
+        </h1>
+        <p className="mx-auto mt-2 max-w-[36ch] text-[15px] leading-6 text-ink-600">
+          Sorry about that — an unexpected error occurred. Your orders and cart are safe.
+        </p>
+
+        <div className="mt-6 space-y-2.5">
+          <Button
+            className="press h-12 w-full rounded-card bg-gradient-to-r from-primary-600 to-primary-500 text-[15px] font-semibold shadow-glow"
+            onClick={reset}
+          >
+            Try again
+          </Button>
+          <Link
+            href="/shop"
+            className="press flex h-12 w-full items-center justify-center rounded-card border border-line bg-surface text-[15px] font-semibold text-ink-900 transition-colors hover:bg-surface-2"
+          >
+            Back to the shop
+          </Link>
+          {supportUrl && (
+            <a
+              href={supportUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="press flex h-12 w-full items-center justify-center gap-2 rounded-card border border-success/30 bg-success/5 text-[15px] font-semibold text-success transition-colors hover:bg-success/10"
+            >
+              <WhatsAppIcon />
+              Chat with support
+            </a>
+          )}
+        </div>
+
+        {error.digest && (
+          <p className="mt-4 text-xs text-ink-400">
+            Support code: <span className="font-mono tabular-nums">{error.digest}</span>
+          </p>
+        )}
+      </div>
     </div>
   );
 }

@@ -2,21 +2,27 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Address,
+  AttachRxBody,
   CouponQuote,
   CreateAddressBody,
   CreateOrderBody,
   CreateOrderResult,
+  CreatePatientBody,
   ErrorCode,
+  LockerPrescription,
+  Patient,
+  PatientGender,
+  PatientRelation,
   PaymentMethod,
   ServiceabilityResult,
   ValidateCartResult,
 } from "@medrush/contracts";
 import { IDEMPOTENCY_KEY_HEADER } from "@medrush/contracts";
-import { api, ApiError, apiErrorMessage, type Envelope } from "@/lib/api";
+import { api, ApiError, apiErrorMessage, qs, type Envelope } from "@/lib/api";
 import { API_BASE_URL } from "@/lib/env";
 import { useAuth } from "@/lib/auth";
 import { useCart } from "@/lib/cart";
@@ -24,8 +30,8 @@ import { useStore } from "@/lib/store";
 import { formatPaise } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { collectPayment, pollUntilPaid } from "@/lib/payment";
-import { Button, Card, EmptyState, ErrorState, Spinner } from "@/components/ui";
-import { Field, TextInput } from "@/components/kit";
+import { Badge, Button, EmptyState, ErrorState, Skeleton, Spinner } from "@/components/ui";
+import { Field, Select, TextInput } from "@/components/kit";
 import { TopBar } from "@/components/AppShell";
 import { Modal } from "@/components/modal";
 import { useToast } from "@/components/toast";
@@ -76,6 +82,24 @@ async function createOrder(
 /* ================================================================ page */
 
 const EMPTY_FORM = { label: "", line1: "", line2: "", landmark: "", pincode: "", lat: "", lng: "" };
+const EMPTY_PATIENT: { name: string; relation: PatientRelation; dob: string; gender: string } = {
+  name: "",
+  relation: "CHILD",
+  dob: "",
+  gender: "",
+};
+
+const RELATION_LABEL: Record<PatientRelation, string> = {
+  SELF: "Self",
+  SPOUSE: "Spouse",
+  CHILD: "Child",
+  PARENT: "Parent",
+  OTHER: "Other",
+};
+
+/** Teal-gradient CTA. `disabled:bg-none` lets the Button's disabled colour win. */
+const CTA =
+  "press bg-gradient-to-r from-primary-600 to-primary-500 shadow-glow hover:from-primary-700 hover:to-primary-600 disabled:bg-none disabled:shadow-none";
 
 export default function CheckoutPage() {
   const router = useRouter();
@@ -99,6 +123,15 @@ export default function CheckoutPage() {
   const [showAddrForm, setShowAddrForm] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [locating, setLocating] = useState(false);
+  /** Dependent this order is for; null = the account holder ("Myself"). */
+  const [patientId, setPatientId] = useState<string | null>(null);
+  const [showPatientForm, setShowPatientForm] = useState(false);
+  const [patientForm, setPatientForm] = useState(EMPTY_PATIENT);
+  /** Locker prescription to attach right after the order is created. */
+  const [rxId, setRxId] = useState<string | null>(null);
+  // The order-create call is idempotent; the attach call is not, so a manual
+  // retry after a payment failure must not re-attach.
+  const rxAttached = useRef(false);
 
   // Auth guard — browsing is public, checkout is not.
   useEffect(() => {
@@ -156,6 +189,46 @@ export default function CheckoutPage() {
     enabled: Boolean(selectedAddress),
   });
   const serviceability = svcQuery.data?.data;
+
+  // Dependent profiles ("who is this order for"). Optional by design — the
+  // default sends no patientId, so an unavailable endpoint never blocks checkout.
+  const patientsQuery = useQuery({
+    queryKey: ["patients"],
+    queryFn: () => api.get<Patient[]>("/v1/patients"),
+    enabled: Boolean(user),
+  });
+  const patients = patientsQuery.data?.data ?? [];
+  const selectedPatient = patients.find((p) => p.id === patientId) ?? null;
+
+  // A profile deleted in another tab must not be sent with the order.
+  useEffect(() => {
+    if (patientId && patientsQuery.isSuccess && !patients.some((p) => p.id === patientId)) {
+      setPatientId(null);
+    }
+  }, [patientId, patients, patientsQuery.isSuccess]);
+
+  // Re-usable locker prescriptions, only when this cart actually needs one.
+  const rxQuery = useQuery({
+    queryKey: ["prescriptions", "unattached"],
+    queryFn: () => api.get<LockerPrescription[]>(`/v1/prescriptions${qs({ unattached: true })}`),
+    enabled: Boolean(user) && requiresRx,
+  });
+  // A rejected prescription can't be re-used — ops has already refused it.
+  const lockerRx = (rxQuery.data?.data ?? []).filter((rx) => rx.status !== "REJECTED");
+
+  // A prescription that got attached/deleted elsewhere must not be carried over.
+  useEffect(() => {
+    const list = rxQuery.data?.data;
+    if (rxId && list && !list.some((rx) => rx.id === rxId)) setRxId(null);
+  }, [rxId, rxQuery.data]);
+
+  // Endpoints that this deployment simply doesn't serve yet return 404 — those
+  // optional shelves stay quiet instead of crying error at the customer.
+  const patientsFailed =
+    patientsQuery.isError &&
+    !(patientsQuery.error instanceof ApiError && patientsQuery.error.status === 404);
+  const rxFailed =
+    rxQuery.isError && !(rxQuery.error instanceof ApiError && rxQuery.error.status === 404);
 
   /* --------------------------------------------------------- COD gating */
 
@@ -220,6 +293,19 @@ export default function CheckoutPage() {
       toast.push({ type: "error", message: apiErrorMessage(err, "Could not save address") }),
   });
 
+  const createPatient = useMutation({
+    mutationFn: (body: CreatePatientBody) => api.post<Patient>("/v1/patients", body),
+    onSuccess: (res) => {
+      void qc.invalidateQueries({ queryKey: ["patients"] });
+      setPatientId(res.data.id);
+      setShowPatientForm(false);
+      setPatientForm(EMPTY_PATIENT);
+      toast.push({ type: "success", message: `Profile added — ordering for ${res.data.name}` });
+    },
+    onError: (err) =>
+      toast.push({ type: "error", message: apiErrorMessage(err, "Could not save that profile") }),
+  });
+
   const placeOrder = useMutation({
     mutationFn: async (): Promise<{ orderId: string; confirming: boolean }> => {
       if (!token) throw new ApiError("INTERNAL", "You are not signed in", 401);
@@ -230,9 +316,30 @@ export default function CheckoutPage() {
         ...(coupon.trim() ? { couponCode: coupon.trim().toUpperCase() } : {}),
         ...(deliveryNote.trim() ? { deliveryNote: deliveryNote.trim() } : {}),
         ...(contactless ? { contactless: true } : {}),
+        ...(patientId ? { patientId } : {}),
       };
       const result = await createOrder(body, token, idempotencyKey);
       const orderId = result.order.id;
+
+      // Locker re-use is a post-create step by contract. The order already
+      // exists at this point, so a failed attach is reported and nothing else —
+      // it must never surface as "the order failed".
+      if (rxId && !rxAttached.current) {
+        try {
+          await api.post<LockerPrescription>(`/v1/orders/${orderId}/prescriptions/attach`, {
+            prescriptionId: rxId,
+          } satisfies AttachRxBody);
+          rxAttached.current = true;
+        } catch (err) {
+          toast.push({
+            type: "error",
+            message: apiErrorMessage(
+              err,
+              "Order placed, but that prescription couldn’t be attached — add it from the order screen",
+            ),
+          });
+        }
+      }
 
       // Rx orders need pharmacist review before payment — the detail screen owns
       // the Rx upload (and any later payment), so route there straight away.
@@ -251,6 +358,7 @@ export default function CheckoutPage() {
     onSuccess: ({ orderId, confirming }) => {
       void qc.invalidateQueries({ queryKey: ["cart"] });
       void qc.invalidateQueries({ queryKey: ["cart-validate"] });
+      void qc.invalidateQueries({ queryKey: ["prescriptions"] });
       // `?confirming=1` → the order page shows its "Payment received —
       // confirming…" state instead of the retry card until the status flips.
       router.push(confirming ? `/orders/${orderId}?confirming=1` : `/orders/${orderId}`);
@@ -324,6 +432,24 @@ export default function CheckoutPage() {
     createAddress.mutate(body);
   }
 
+  /* --------------------------------------------------- patient form */
+
+  function submitPatient(e: React.FormEvent) {
+    e.preventDefault();
+    const name = patientForm.name.trim();
+    if (!name) {
+      toast.push({ type: "error", message: "Enter the patient’s name" });
+      return;
+    }
+    const body: CreatePatientBody = {
+      name,
+      relation: patientForm.relation,
+      ...(patientForm.dob ? { dob: patientForm.dob } : {}),
+      ...(patientForm.gender ? { gender: patientForm.gender as PatientGender } : {}),
+    };
+    createPatient.mutate(body);
+  }
+
   /* ---------------------------------------------------- block reasoning */
 
   let blockReason: string | null = null;
@@ -344,19 +470,22 @@ export default function CheckoutPage() {
 
   if (authLoading || !user) {
     return (
-      <div className="flex min-h-dvh items-center justify-center">
+      <div className="flex min-h-dvh items-center justify-center bg-mesh">
         <Spinner className="h-6 w-6 text-primary-600" />
       </div>
     );
   }
 
   return (
-    <div>
+    <div className="min-h-dvh bg-mesh">
       <TopBar title="Checkout" back />
 
       {validateQuery.isLoading ? (
-        <div className="flex justify-center py-20">
-          <Spinner className="h-6 w-6 text-primary-600" />
+        <div className="space-y-3 p-4" aria-hidden>
+          <Skeleton className="h-24 rounded-xl2" />
+          <Skeleton className="h-40 rounded-xl2" />
+          <Skeleton className="h-28 rounded-xl2" />
+          <Skeleton className="h-36 rounded-xl2" />
         </div>
       ) : validateQuery.isError ? (
         <div className="p-4">
@@ -367,32 +496,35 @@ export default function CheckoutPage() {
         </div>
       ) : !validate || validate.cart.items.length === 0 ? (
         <div className="p-4">
-          <EmptyState title="Your cart is empty" hint="Add items before checking out." />
-          <Link href="/" className="mt-4 block">
-            <Button variant="secondary" className="w-full">
-              Browse products
-            </Button>
-          </Link>
+          <EmptyState
+            title="Your cart is empty"
+            hint="Add items before checking out."
+            action={
+              <Link href="/shop" className="block">
+                <Button className={cn("w-full", CTA)}>Browse products</Button>
+              </Link>
+            }
+          />
         </div>
       ) : (
-        <div className="space-y-4 px-4 py-4 pb-44">
+        <div className="space-y-5 px-4 py-4 pb-44">
           {/* store closed banner */}
           {store && !store.isOpen && (
-            <Card className="border-warning/30 bg-warning/10 p-3">
-              <p className="text-sm font-medium text-warning">
+            <div className="rounded-xl2 border border-warning/30 bg-warning/10 p-3.5">
+              <p className="text-sm font-semibold text-warning">
                 The store is currently closed — orders can’t be placed right now.
               </p>
-            </Card>
+            </div>
           )}
 
           {/* cart issues */}
           {issues.length > 0 && (
-            <Card className="border-warning/30 bg-warning/5 p-4">
-              <div className="mb-2 flex items-center justify-between">
+            <div className="rounded-xl2 border border-warning/30 bg-warning/5 p-4 shadow-card2">
+              <div className="mb-2 flex items-center justify-between gap-2">
                 <p className="text-sm font-semibold text-warning">Please review your cart</p>
                 <button
                   onClick={() => validateQuery.refetch()}
-                  className="text-xs font-medium text-primary-700"
+                  className="press min-h-[44px] px-2 text-xs font-semibold text-primary-700"
                 >
                   Re-check
                 </button>
@@ -408,72 +540,68 @@ export default function CheckoutPage() {
                 ))}
               </ul>
               <Link href="/cart" className="mt-3 block">
-                <Button variant="secondary" className="w-full">
+                <Button variant="secondary" className="press w-full">
                   Edit cart
                 </Button>
               </Link>
-            </Card>
+            </div>
           )}
 
           {/* -------------------------------------------------- address */}
-          <section>
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-ink-900">Delivery address</h2>
+          <Section
+            title="Delivery address"
+            action={
               <button
                 onClick={() => setShowAddrForm(true)}
-                className="text-sm font-medium text-primary-700"
+                className="press min-h-[44px] px-2 text-sm font-semibold text-primary-700"
               >
                 + Add new
               </button>
-            </div>
-
+            }
+          >
             {addressesQuery.isLoading ? (
-              <div className="flex justify-center py-6">
-                <Spinner className="h-5 w-5 text-primary-600" />
+              <div className="space-y-2" aria-hidden>
+                <Skeleton className="h-20 rounded-xl2" />
+                <Skeleton className="h-20 rounded-xl2" />
               </div>
+            ) : addressesQuery.isError ? (
+              <ErrorState
+                message="Couldn’t load your addresses."
+                onRetry={() => addressesQuery.refetch()}
+              />
             ) : addresses.length === 0 ? (
-              <Card className="p-4">
-                <p className="text-sm text-ink-600">
-                  No saved addresses yet. Add one to continue.
-                </p>
-                <Button className="mt-3 w-full" onClick={() => setShowAddrForm(true)}>
+              <div className="glass rounded-xl2 p-4 shadow-card2">
+                <p className="text-sm text-ink-600">No saved addresses yet. Add one to continue.</p>
+                <Button className={cn("mt-3 w-full", CTA)} onClick={() => setShowAddrForm(true)}>
                   Add address
                 </Button>
-              </Card>
+              </div>
             ) : (
-              <div className="space-y-2">
+              <div className="space-y-2" role="radiogroup" aria-label="Delivery address">
                 {addresses.map((addr) => {
                   const active = addr.id === selectedAddressId;
                   return (
-                    <label
-                      key={addr.id}
-                      className={cn(
-                        "flex cursor-pointer items-start gap-3 rounded-card border bg-surface p-3",
-                        active ? "border-primary-600 ring-1 ring-primary-600" : "border-line",
-                      )}
-                    >
+                    <label key={addr.id} className={optionCls(active)}>
                       <input
                         type="radio"
                         name="address"
-                        className="mt-1 h-4 w-4 accent-primary-600"
+                        className="mt-1 h-4 w-4 shrink-0 accent-primary-600"
                         checked={active}
                         onChange={() => setSelectedAddressId(addr.id)}
                       />
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-ink-900">
+                        <p className="text-sm font-semibold text-ink-900">
                           {addr.label}
                           {addr.isDefault && (
-                            <span className="ml-2 text-xs font-normal text-ink-400">Default</span>
+                            <span className="ml-2 text-xs font-normal text-ink-600">Default</span>
                           )}
                         </p>
                         <p className="text-sm text-ink-600">
                           {addr.line1}
                           {addr.line2 ? `, ${addr.line2}` : ""}
                         </p>
-                        {addr.landmark && (
-                          <p className="text-xs text-ink-400">Near {addr.landmark}</p>
-                        )}
-                        <p className="text-xs text-ink-400">PIN {addr.pincode}</p>
+                        {addr.landmark && <p className="text-xs text-ink-600">Near {addr.landmark}</p>}
+                        <p className="text-xs text-ink-600">PIN {addr.pincode}</p>
                       </div>
                     </label>
                   );
@@ -483,13 +611,13 @@ export default function CheckoutPage() {
 
             {/* serviceability for the selected address */}
             {selectedAddress && (
-              <div className="mt-2 text-sm">
+              <div className="mt-2 text-sm" aria-live="polite">
                 {svcQuery.isLoading ? (
-                  <p className="text-ink-400">Checking serviceability…</p>
+                  <p className="text-ink-600">Checking serviceability…</p>
                 ) : svcQuery.isError ? (
-                  <p className="text-danger">Could not check the delivery area.</p>
+                  <p className="font-medium text-danger">Could not check the delivery area.</p>
                 ) : serviceability && !serviceability.serviceable ? (
-                  <p className="font-medium text-danger">
+                  <p className="font-semibold text-danger">
                     Outside our delivery area
                     {serviceability.distanceM
                       ? ` (${(serviceability.distanceM / 1000).toFixed(1)} km away)`
@@ -497,8 +625,8 @@ export default function CheckoutPage() {
                     .
                   </p>
                 ) : serviceability ? (
-                  <>
-                    <p className="font-medium text-success">
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl2 border border-success/20 bg-success/5 px-3 py-2">
+                    <span className="text-sm font-semibold text-success">
                       Deliverable
                       {serviceability.deliveryPaise !== null
                         ? ` · fee ${formatPaise(serviceability.deliveryPaise)}`
@@ -506,39 +634,180 @@ export default function CheckoutPage() {
                       {serviceability.distanceM
                         ? ` · ${(serviceability.distanceM / 1000).toFixed(1)} km`
                         : ""}
-                    </p>
+                    </span>
                     {/* ETA heuristic mirrors the tracking screen's model: ride
                         time at ~5 m/s (≈18 km/h city riding) + ~15 min for
                         pharmacist check & packing. The 40-min promise is the cap. */}
-                    <p className="mt-0.5 text-xs text-ink-600">
-                      Estimated delivery in ~
+                    <span className="text-xs text-ink-600">
+                      Est. delivery ~
                       {Math.min(40, Math.max(20, Math.round(serviceability.distanceM / 300) + 15))}{" "}
                       min after payment
-                    </p>
-                  </>
+                    </span>
+                  </div>
                 ) : null}
               </div>
             )}
-          </section>
+          </Section>
+
+          {/* ------------------------------------------- who is it for */}
+          <Section
+            title="Who is this order for?"
+            action={
+              <button
+                onClick={() => setShowPatientForm(true)}
+                className="press min-h-[44px] px-2 text-sm font-semibold text-primary-700"
+              >
+                + Add profile
+              </button>
+            }
+          >
+            {patientsQuery.isLoading ? (
+              <div className="flex gap-2" aria-hidden>
+                <Skeleton className="h-11 w-28 rounded-pill" />
+                <Skeleton className="h-11 w-32 rounded-pill" />
+              </div>
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Patient">
+                  <PatientChip
+                    label="Myself"
+                    sub={user.name ?? undefined}
+                    active={patientId === null}
+                    onSelect={() => setPatientId(null)}
+                  />
+                  {patients.map((p) => (
+                    <PatientChip
+                      key={p.id}
+                      label={p.name}
+                      sub={RELATION_LABEL[p.relation]}
+                      active={patientId === p.id}
+                      onSelect={() => setPatientId(p.id)}
+                    />
+                  ))}
+                </div>
+                {patientsFailed && (
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <p className="text-xs text-ink-600">Couldn’t load your saved profiles.</p>
+                    <button
+                      onClick={() => void patientsQuery.refetch()}
+                      className="press min-h-[44px] px-2 text-xs font-semibold text-primary-700"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+                <p className="mt-2 text-xs text-ink-600">
+                  {selectedPatient
+                    ? `This order will be dispensed for ${selectedPatient.name} (${RELATION_LABEL[selectedPatient.relation].toLowerCase()}).`
+                    : "Ordering for yourself. Add a profile to order for a family member — it keeps the pharmacy record accurate."}
+                </p>
+              </>
+            )}
+          </Section>
+
+          {/* -------------------------------------------- prescription */}
+          {requiresRx && (
+            <Section title="Prescription">
+              <div className="rounded-xl2 border border-rx/25 bg-rx/5 p-3.5">
+                <p className="text-sm text-rx">
+                  This order contains prescription items. Attach a prescription from your locker
+                  now, or upload one on the order screen — either way a pharmacist reviews it before
+                  we dispatch.
+                </p>
+              </div>
+
+              {rxQuery.isLoading ? (
+                <div className="mt-2 space-y-2" aria-hidden>
+                  <Skeleton className="h-16 rounded-xl2" />
+                  <Skeleton className="h-16 rounded-xl2" />
+                </div>
+              ) : rxFailed ? (
+                <div className="mt-2 flex items-center justify-between gap-3 rounded-xl2 border border-line bg-surface px-3.5 py-3">
+                  <p className="text-xs text-ink-600">Couldn’t load your prescription locker.</p>
+                  <button
+                    onClick={() => void rxQuery.refetch()}
+                    className="press min-h-[44px] px-2 text-xs font-semibold text-primary-700"
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : lockerRx.length === 0 ? (
+                <p className="mt-2 text-xs text-ink-600">
+                  No re-usable prescriptions in your locker yet — you can upload one right after
+                  placing this order.
+                </p>
+              ) : (
+                <div className="mt-2 space-y-2" role="radiogroup" aria-label="Prescription">
+                  {lockerRx.map((rx) => {
+                    const active = rx.id === rxId;
+                    return (
+                      <label key={rx.id} className={optionCls(active)}>
+                        <input
+                          type="radio"
+                          name="rx"
+                          className="mt-1 h-4 w-4 shrink-0 accent-primary-600"
+                          checked={active}
+                          onChange={() => setRxId(rx.id)}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold text-ink-900">
+                            {rx.label ?? "Prescription"}
+                          </p>
+                          <p className="truncate text-xs text-ink-600">
+                            {[rx.doctorName, rx.patientName].filter(Boolean).join(" · ") ||
+                              "No doctor recorded"}
+                          </p>
+                        </div>
+                        <span className="shrink-0">
+                          <Badge tone={rx.status === "APPROVED" ? "green" : "amber"}>
+                            {rx.status === "APPROVED" ? "Approved" : "In review"}
+                          </Badge>
+                        </span>
+                      </label>
+                    );
+                  })}
+                  <label className={optionCls(rxId === null)}>
+                    <input
+                      type="radio"
+                      name="rx"
+                      className="mt-1 h-4 w-4 shrink-0 accent-primary-600"
+                      checked={rxId === null}
+                      onChange={() => setRxId(null)}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-ink-900">
+                        I’ll upload one after placing the order
+                      </p>
+                      <p className="text-xs text-ink-600">
+                        The order screen takes a photo or PDF of your prescription.
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              )}
+            </Section>
+          )}
 
           {/* -------------------------------------------------- coupon */}
-          <section>
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-ink-900">Coupon</h2>
-              <Link href="/offers" className="text-sm font-medium text-primary-700">
+          <Section
+            title="Coupon"
+            action={
+              <Link
+                href="/offers"
+                className="press min-h-[44px] px-2 text-sm font-semibold text-primary-700"
+              >
                 View offers
               </Link>
-            </div>
+            }
+          >
             {quote ? (
-              <div className="flex items-center justify-between rounded-card border border-success/30 bg-success/5 px-3 py-2.5">
-                <div>
-                  <p className="text-sm font-semibold text-success">
-                    {quote.code} applied — you save {formatPaise(quote.discountPaise)}
-                  </p>
-                </div>
+              <div className="flex items-center justify-between gap-2 rounded-xl2 border border-success/30 bg-success/5 px-3.5 py-3">
+                <p className="text-sm font-semibold text-success">
+                  {quote.code} applied — you save {formatPaise(quote.discountPaise)}
+                </p>
                 <button
                   type="button"
-                  className="text-xs font-medium text-danger"
+                  className="press min-h-[44px] shrink-0 px-2 text-xs font-semibold text-danger"
                   onClick={clearCoupon}
                 >
                   Remove
@@ -549,6 +818,7 @@ export default function CheckoutPage() {
                 <div className="flex gap-2">
                   <TextInput
                     placeholder="Coupon code (optional)"
+                    aria-label="Coupon code"
                     value={coupon}
                     onChange={(e) => {
                       setCoupon(e.target.value.toUpperCase());
@@ -558,7 +828,7 @@ export default function CheckoutPage() {
                   />
                   <Button
                     variant="secondary"
-                    className="shrink-0"
+                    className="press shrink-0"
                     disabled={coupon.trim() === ""}
                     loading={applyCoupon.isPending}
                     onClick={() => applyCoupon.mutate(coupon.trim().toUpperCase())}
@@ -566,15 +836,18 @@ export default function CheckoutPage() {
                     Apply
                   </Button>
                 </div>
-                {couponError && <p className="mt-1 text-xs font-medium text-danger">{couponError}</p>}
+                {couponError && (
+                  <p className="mt-1 text-xs font-semibold text-danger" aria-live="polite">
+                    {couponError}
+                  </p>
+                )}
               </>
             )}
-          </section>
+          </Section>
 
           {/* ------------------------------------- delivery preferences */}
-          <section>
-            <h2 className="mb-2 text-sm font-semibold text-ink-900">Delivery preferences</h2>
-            <Card className="space-y-3 p-3">
+          <Section title="Delivery preferences">
+            <div className="glass space-y-3 rounded-xl2 p-3.5 shadow-card2">
               <Field label="Note for the rider" hint="Optional · e.g. “Blue gate, call on arrival”">
                 <TextInput
                   placeholder="Any directions for the delivery partner?"
@@ -585,74 +858,58 @@ export default function CheckoutPage() {
               </Field>
               <label
                 className={cn(
-                  "flex items-center gap-3",
-                  paymentMethod === "COD" ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+                  "flex min-h-[44px] items-center gap-3",
+                  paymentMethod === "COD" ? "cursor-not-allowed opacity-60" : "cursor-pointer",
                 )}
               >
                 <input
                   type="checkbox"
-                  className="h-4 w-4 accent-primary-600"
+                  className="h-4 w-4 shrink-0 accent-primary-600"
                   checked={contactless}
                   disabled={paymentMethod === "COD"}
                   onChange={(e) => setContactless(e.target.checked)}
                 />
                 <span className="text-sm text-ink-900">
                   Contactless delivery
-                  <span className="block text-xs text-ink-400">
+                  <span className="block text-xs text-ink-600">
                     {paymentMethod === "COD"
                       ? "Not available with cash on delivery"
-                      : "We'll leave the package at your door"}
+                      : "We’ll leave the package at your door"}
                   </span>
                 </span>
               </label>
-            </Card>
-          </section>
+            </div>
+          </Section>
 
           {/* -------------------------------------------------- payment */}
-          <section>
-            <h2 className="mb-2 text-sm font-semibold text-ink-900">Payment method</h2>
-            <div className="space-y-2">
-              <label
-                className={cn(
-                  "flex cursor-pointer items-center gap-3 rounded-card border bg-surface p-3",
-                  paymentMethod === "PREPAID"
-                    ? "border-primary-600 ring-1 ring-primary-600"
-                    : "border-line",
-                )}
-              >
+          <Section title="Payment method">
+            <div className="space-y-2" role="radiogroup" aria-label="Payment method">
+              <label className={optionCls(paymentMethod === "PREPAID")}>
                 <input
                   type="radio"
                   name="pay"
-                  className="h-4 w-4 accent-primary-600"
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-primary-600"
                   checked={paymentMethod === "PREPAID"}
                   onChange={() => setPaymentMethod("PREPAID")}
                 />
                 <div>
-                  <p className="text-sm font-medium text-ink-900">Pay online</p>
-                  <p className="text-xs text-ink-400">UPI, cards & netbanking via Razorpay</p>
+                  <p className="text-sm font-semibold text-ink-900">Pay online</p>
+                  <p className="text-xs text-ink-600">UPI, cards &amp; netbanking via Razorpay</p>
                 </div>
               </label>
 
-              <label
-                className={cn(
-                  "flex cursor-pointer items-center gap-3 rounded-card border bg-surface p-3",
-                  !codAllowed && "opacity-60",
-                  paymentMethod === "COD"
-                    ? "border-primary-600 ring-1 ring-primary-600"
-                    : "border-line",
-                )}
-              >
+              <label className={cn(optionCls(paymentMethod === "COD"), !codAllowed && "opacity-60")}>
                 <input
                   type="radio"
                   name="pay"
-                  className="h-4 w-4 accent-primary-600"
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-primary-600"
                   checked={paymentMethod === "COD"}
                   disabled={!codAllowed}
                   onChange={() => setPaymentMethod("COD")}
                 />
                 <div>
-                  <p className="text-sm font-medium text-ink-900">Cash on delivery</p>
-                  <p className="text-xs text-ink-400">
+                  <p className="text-sm font-semibold text-ink-900">Cash on delivery</p>
+                  <p className="text-xs text-ink-600">
                     {!store?.featureFlags.codEnabled
                       ? "Currently unavailable"
                       : totals && store && totals.totalPaise > store.codLimitPaise
@@ -662,32 +919,20 @@ export default function CheckoutPage() {
                 </div>
               </label>
             </div>
-          </section>
-
-          {/* Rx note */}
-          {requiresRx && (
-            <Card className="border-rx/30 bg-rx/5 p-3">
-              <p className="text-sm text-rx">
-                This order contains prescription items. You’ll be asked to upload a valid
-                prescription on the next screen — it goes for pharmacist review before dispatch.
-              </p>
-            </Card>
-          )}
+          </Section>
 
           {/* -------------------------------------------------- bill */}
           {totals && (
-            <section>
-              <h2 className="mb-2 text-sm font-semibold text-ink-900">Bill details</h2>
-              <Card className="p-4">
+            <Section title="Bill details">
+              <div className="glass rounded-xl2 p-4 shadow-card2">
                 <BillRow label={`Items (${itemCount})`} value={formatPaise(totals.itemsPaise)} />
                 <BillRow
                   label="Delivery fee"
-                  value={
-                    totals.deliveryPaise === 0 ? "FREE" : formatPaise(totals.deliveryPaise)
-                  }
+                  value={totals.deliveryPaise === 0 ? "FREE" : formatPaise(totals.deliveryPaise)}
+                  accent={totals.deliveryPaise === 0}
                 />
                 {quote && (
-                  <div className="flex items-center justify-between py-0.5 text-sm">
+                  <div className="flex items-center justify-between py-1 text-sm">
                     <span className="text-success">Discount ({quote.code})</span>
                     <span className="tabular-nums text-success">
                       − {formatPaise(quote.discountPaise)}
@@ -697,35 +942,37 @@ export default function CheckoutPage() {
                 <div className="my-2 border-t border-line" />
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-semibold text-ink-900">To pay</span>
-                  <span className="text-base font-semibold tabular-nums text-ink-900">
+                  <span className="text-lg font-semibold tabular-nums text-ink-900">
                     {formatPaise(quote ? quote.totalPaise : totals.totalPaise)}
                   </span>
                 </div>
                 {!quote && coupon.trim() !== "" && (
-                  <p className="mt-1 text-xs text-ink-400">
+                  <p className="mt-1 text-xs text-ink-600">
                     Tap Apply to see the discount before you pay.
                   </p>
                 )}
                 {!totals.minOrderMet && (
-                  <p className="mt-2 text-xs font-medium text-warning">
+                  <p className="mt-2 text-xs font-semibold text-warning">
                     Add {formatPaise(Math.max(0, totals.minOrderPaise - totals.itemsPaise))} more to
                     reach the {formatPaise(totals.minOrderPaise)} minimum.
                   </p>
                 )}
-              </Card>
-            </section>
+              </div>
+            </Section>
           )}
         </div>
       )}
 
       {/* --------------------------------------------------- sticky CTA */}
       {validate && validate.cart.items.length > 0 && (
-        <div className="fixed bottom-16 left-1/2 z-30 w-full max-w-md -translate-x-1/2 border-t border-line bg-surface px-4 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.05)]">
+        <div className="fixed bottom-16 left-1/2 z-30 w-full max-w-md -translate-x-1/2 glass px-4 py-3 shadow-[0_-8px_28px_rgba(15,23,42,0.10)]">
           {blockReason && blockReason !== "Loading…" && (
-            <p className="mb-2 text-center text-xs font-medium text-warning">{blockReason}</p>
+            <p className="mb-2 text-center text-xs font-semibold text-warning" aria-live="polite">
+              {blockReason}
+            </p>
           )}
           <Button
-            className="w-full"
+            className={cn("w-full", CTA)}
             loading={placeOrder.isPending}
             disabled={!canPlace}
             onClick={() => placeOrder.mutate()}
@@ -745,7 +992,7 @@ export default function CheckoutPage() {
             <Button variant="secondary" onClick={() => setShowAddrForm(false)}>
               Cancel
             </Button>
-            <Button loading={createAddress.isPending} onClick={submitAddress}>
+            <Button className={CTA} loading={createAddress.isPending} onClick={submitAddress}>
               Save address
             </Button>
           </>
@@ -796,7 +1043,7 @@ export default function CheckoutPage() {
             <Button
               type="button"
               variant="secondary"
-              className="w-full"
+              className="press w-full"
               loading={locating}
               onClick={captureLocation}
             >
@@ -825,15 +1072,153 @@ export default function CheckoutPage() {
           <button type="submit" className="hidden" aria-hidden />
         </form>
       </Modal>
+
+      {/* --------------------------------------------------- add profile */}
+      <Modal
+        open={showPatientForm}
+        onClose={() => setShowPatientForm(false)}
+        title="Add a patient profile"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowPatientForm(false)}>
+              Cancel
+            </Button>
+            <Button className={CTA} loading={createPatient.isPending} onClick={submitPatient}>
+              Save profile
+            </Button>
+          </>
+        }
+      >
+        <form className="space-y-3" onSubmit={submitPatient}>
+          <p className="text-xs text-ink-600">
+            Dispensing records name the patient, not the account holder — so a profile keeps the
+            pharmacy register correct for Schedule H/H1 medicines.
+          </p>
+          <Field label="Full name">
+            <TextInput
+              placeholder="e.g. Aarav Sharma"
+              maxLength={80}
+              value={patientForm.name}
+              onChange={(e) => setPatientForm((f) => ({ ...f, name: e.target.value }))}
+            />
+          </Field>
+          <Field label="Relation">
+            <Select
+              value={patientForm.relation}
+              onChange={(e) =>
+                setPatientForm((f) => ({ ...f, relation: e.target.value as PatientRelation }))
+              }
+            >
+              {(Object.keys(RELATION_LABEL) as PatientRelation[]).map((r) => (
+                <option key={r} value={r}>
+                  {RELATION_LABEL[r]}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Date of birth" hint="Optional">
+              <TextInput
+                type="date"
+                max={new Date().toISOString().slice(0, 10)}
+                value={patientForm.dob}
+                onChange={(e) => setPatientForm((f) => ({ ...f, dob: e.target.value }))}
+              />
+            </Field>
+            <Field label="Gender" hint="Optional">
+              <Select
+                value={patientForm.gender}
+                onChange={(e) => setPatientForm((f) => ({ ...f, gender: e.target.value }))}
+              >
+                <option value="">Not specified</option>
+                <option value="F">Female</option>
+                <option value="M">Male</option>
+                <option value="OTHER">Other</option>
+              </Select>
+            </Field>
+          </div>
+          <button type="submit" className="hidden" aria-hidden />
+        </form>
+      </Modal>
     </div>
   );
 }
 
-function BillRow({ label, value }: { label: string; value: string }) {
+/* ============================================================== bits */
+
+/** Shared selectable-card styling for the address / payment / Rx radio lists. */
+function optionCls(active: boolean): string {
+  return cn(
+    "press flex cursor-pointer items-start gap-3 rounded-xl2 border p-3.5 transition-shadow",
+    active
+      ? "border-primary-600 bg-primary-50 shadow-card2 ring-1 ring-primary-600"
+      : "border-line bg-surface shadow-sm hover:border-primary-200",
+  );
+}
+
+function Section({
+  title,
+  action,
+  children,
+}: {
+  title: string;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
   return (
-    <div className="flex items-center justify-between py-0.5 text-sm">
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <h2 className="text-sm font-semibold text-ink-900">{title}</h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** Radio pill for the patient selector — a real radio, visually a chip. */
+function PatientChip({
+  label,
+  sub,
+  active,
+  onSelect,
+}: {
+  label: string;
+  sub?: string;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <label className="press cursor-pointer">
+      <input
+        type="radio"
+        name="patient"
+        className="peer sr-only"
+        checked={active}
+        onChange={onSelect}
+      />
+      <span
+        className={cn(
+          "flex min-h-[44px] items-center gap-1.5 rounded-pill border px-4 text-sm font-medium",
+          "border-line bg-surface text-ink-600 shadow-sm",
+          "peer-checked:border-primary-600 peer-checked:bg-primary-50 peer-checked:text-primary-800 peer-checked:shadow-glow",
+          "peer-focus-visible:ring-2 peer-focus-visible:ring-primary-600 peer-focus-visible:ring-offset-2",
+        )}
+      >
+        {label}
+        {sub && <span className="text-xs font-normal text-ink-600">· {sub}</span>}
+      </span>
+    </label>
+  );
+}
+
+function BillRow({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+  return (
+    <div className="flex items-center justify-between py-1 text-sm">
       <span className="text-ink-600">{label}</span>
-      <span className="tabular-nums text-ink-900">{value}</span>
+      <span className={cn("tabular-nums", accent ? "font-semibold text-success" : "text-ink-900")}>
+        {value}
+      </span>
     </div>
   );
 }

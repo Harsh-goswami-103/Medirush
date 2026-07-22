@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect } from "react";
+import { use, useEffect, type ReactNode } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
@@ -10,15 +10,15 @@ import { api } from "@/lib/api";
 import { whatsappUrl } from "@/lib/env";
 import { useAuth } from "@/lib/auth";
 import { useOrderLive } from "@/lib/socket";
-import { timeAgo } from "@/lib/format";
+import { formatDateTime, timeAgo } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { TopBar } from "@/components/AppShell";
-import { Button, Card, ErrorState, OrderStatusBadge, Spinner } from "@/components/ui";
+import { ErrorState, OrderStatusBadge, Skeleton, Spinner } from "@/components/ui";
 
 /** Code-split the MapLibre map — it is browser-only and heavy (§11), so never SSR it. */
 const TrackMap = dynamic(() => import("@/components/TrackMap").then((m) => m.TrackMap), {
   ssr: false,
-  loading: () => <div className="h-full w-full animate-pulse bg-surface-2" />,
+  loading: () => <div className="skeleton h-full w-full" />,
 });
 
 /** Happy-path timeline shown as a vertical stepper. */
@@ -77,7 +77,7 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
 
   if (loading || !user) {
     return (
-      <div className="flex min-h-dvh items-center justify-center">
+      <div className="flex min-h-dvh items-center justify-center bg-mesh">
         <Spinner className="h-6 w-6 text-primary-600" />
       </div>
     );
@@ -91,26 +91,29 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
   const driverPoint = track?.driverLocation
     ? { lat: track.driverLocation.lat, lng: track.driverLocation.lng }
     : null;
+  // Timestamps for the stepper come from the server timeline (oldest→newest).
+  const reachedAt = new Map<OrderStatus, string>();
+  for (const entry of track?.timeline ?? []) {
+    if (!reachedAt.has(entry.status)) reachedAt.set(entry.status, entry.at);
+  }
 
   return (
-    <div>
+    <div className="min-h-dvh bg-mesh">
       <TopBar back title="Track order" right={<LiveIndicator connected={connected} />} />
 
-      <div className="space-y-4 p-4">
+      <div className="space-y-4 p-4 pb-8">
         {trackQuery.isError ? (
           <ErrorState
             message={(trackQuery.error as Error).message}
             onRetry={() => trackQuery.refetch()}
           />
         ) : !track ? (
-          <div className="flex justify-center py-16">
-            <Spinner className="h-6 w-6 text-primary-600" />
-          </div>
+          <TrackSkeleton />
         ) : (
           <>
             {/* Live map — store/destination anchors + the moving driver (§18.1). */}
             {!cancelled && (
-              <div className="h-[260px] overflow-hidden rounded-card border border-line">
+              <div className="h-[260px] overflow-hidden rounded-xl2 border border-line/70 shadow-card2">
                 <TrackMap store={track.store} destination={track.destination} driver={driverPoint} />
               </div>
             )}
@@ -119,35 +122,41 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
             {!cancelled && <EtaBanner status={track.status} etaMinutes={track.etaMinutes} />}
 
             {/* aria-live so screen readers hear status transitions (§20.6). */}
-            <div className="flex items-center justify-between gap-2" aria-live="polite">
-              <p className="text-sm text-ink-600">Current status</p>
+            <div
+              className="flex items-center justify-between gap-2 rounded-pill glass px-4 py-2.5 shadow-sm"
+              aria-live="polite"
+            >
+              <p className="text-sm font-medium text-ink-600">Current status</p>
               <OrderStatusBadge status={track.status} />
             </div>
 
             {cancelled && (
-              <div className="rounded-card border border-danger/20 bg-danger/5 px-4 py-3 text-sm font-medium text-danger">
+              <div className="rounded-xl2 border border-danger/20 bg-danger/5 px-4 py-3 text-sm font-medium text-danger">
                 This order was cancelled.
               </div>
             )}
 
-            <Card className={cn("p-4", cancelled && "opacity-60")}>
+            <Panel className={cn("p-5", cancelled && "opacity-60")}>
               <ol>
                 {HAPPY_PATH.map((step, i) => {
                   const state = i < idx ? "done" : i === idx ? "current" : "upcoming";
                   const isLast = i === HAPPY_PATH.length - 1;
+                  const at = reachedAt.get(step);
                   return (
-                    <li key={step} className="flex gap-3">
+                    <li key={step} className="flex gap-3.5">
                       <div className="flex flex-col items-center">
-                        <span
-                          className={cn(
-                            "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border text-xs font-semibold",
-                            state === "upcoming"
-                              ? "border-line bg-surface text-ink-400"
-                              : "border-primary-600 bg-primary-600 text-white",
-                            state === "current" && "ring-4 ring-primary-600/20",
-                          )}
-                        >
-                          {state === "done" ? (
+                        {state === "upcoming" ? (
+                          <span
+                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-dashed border-line bg-surface text-xs font-semibold text-ink-400"
+                            aria-hidden
+                          >
+                            {i + 1}
+                          </span>
+                        ) : state === "done" ? (
+                          <span
+                            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary-600 to-primary-700 text-white shadow-sm"
+                            aria-hidden
+                          >
                             <svg
                               viewBox="0 0 24 24"
                               className="h-4 w-4"
@@ -156,78 +165,109 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
                               strokeWidth="3"
                               strokeLinecap="round"
                               strokeLinejoin="round"
-                              aria-hidden
                             >
                               <path d="M5 13l4 4L19 7" />
                             </svg>
-                          ) : (
-                            i + 1
-                          )}
-                        </span>
+                          </span>
+                        ) : (
+                          <span
+                            className="relative flex h-9 w-9 shrink-0 items-center justify-center"
+                            aria-hidden
+                          >
+                            {!cancelled && (
+                              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary-500/50 opacity-60" />
+                            )}
+                            <span className="relative inline-flex h-9 w-9 items-center justify-center rounded-full bg-gradient-to-br from-primary-600 to-primary-700 shadow-glow">
+                              <span className="h-2.5 w-2.5 rounded-full bg-white" />
+                            </span>
+                          </span>
+                        )}
                         {!isLast && (
                           <span
                             className={cn(
-                              "my-1 w-0.5 grow rounded-full",
-                              i < idx ? "bg-primary-600" : "bg-line",
+                              "my-1 w-[3px] grow rounded-full",
+                              i < idx
+                                ? "bg-gradient-to-b from-primary-600 to-primary-500"
+                                : "bg-line",
                             )}
+                            aria-hidden
                           />
                         )}
                       </div>
-                      <div className={cn(isLast ? "pb-0" : "pb-6")}>
+                      <div className={cn("min-w-0 flex-1", isLast ? "pb-0" : "pb-6")}>
                         <p
                           className={cn(
-                            "text-sm",
+                            "text-sm leading-9",
                             state === "upcoming"
                               ? "text-ink-400"
                               : state === "current"
-                                ? "font-semibold text-ink-900"
-                                : "text-ink-900",
+                                ? "font-bold text-ink-900"
+                                : "font-medium text-ink-900",
                           )}
                         >
                           {STEP_LABEL[step]}
                         </p>
+                        {at && <p className="-mt-2 text-xs text-ink-400">{formatDateTime(at)}</p>}
                         {state === "current" && !cancelled && (
-                          <p className="mt-0.5 text-xs font-medium text-primary-700">In progress</p>
+                          <p className="mt-1 inline-flex items-center gap-1.5 rounded-pill bg-primary-50 px-2.5 py-0.5 text-xs font-semibold text-primary-800">
+                            <span
+                              className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-600"
+                              aria-hidden
+                            />
+                            In progress
+                          </p>
                         )}
                       </div>
                     </li>
                   );
                 })}
               </ol>
-            </Card>
+            </Panel>
 
             {/* Driver card — name / vehicle / Call (present once ASSIGNED). */}
             {track.driver && (
-              <Card className="p-4">
-                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-400">
+              <Panel className="p-4">
+                <p className="mb-3 text-xs font-semibold uppercase tracking-[0.12em] text-ink-400">
                   Delivery partner
                 </p>
                 <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-ink-900">
-                      {track.driver.name ?? "Assigned"}
-                    </p>
-                    <p className="text-xs text-ink-600">
-                      {track.driver.vehicleType}
-                      {track.driver.vehicleNo ? ` · ${track.driver.vehicleNo}` : ""}
-                    </p>
-                    {track.driverLocation && (
-                      <p className="mt-0.5 text-xs text-ink-400">
-                        Live · updated {timeAgo(track.driverLocation.ts)}
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary-700 to-primary-600 text-base font-bold text-white shadow-glow"
+                      aria-hidden
+                    >
+                      {(track.driver.name ?? "R").charAt(0).toUpperCase()}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-ink-900">
+                        {track.driver.name ?? "Assigned"}
                       </p>
-                    )}
+                      <p className="truncate text-xs text-ink-600">
+                        {track.driver.vehicleType}
+                        {track.driver.vehicleNo ? ` · ${track.driver.vehicleNo}` : ""}
+                      </p>
+                      {track.driverLocation && (
+                        <p className="mt-0.5 text-xs text-ink-400">
+                          Live · updated {timeAgo(track.driverLocation.ts)}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                  <a href={`tel:${track.driver.phone}`} className="shrink-0">
-                    <Button variant="secondary">Call</Button>
+                  <a
+                    href={`tel:${track.driver.phone}`}
+                    aria-label={`Call ${track.driver.name ?? "the delivery partner"}`}
+                    className="press inline-flex min-h-[44px] shrink-0 items-center rounded-pill border border-primary-600/40 bg-primary-50 px-4 text-sm font-semibold text-primary-800"
+                  >
+                    Call
                   </a>
                 </div>
-              </Card>
+              </Panel>
             )}
 
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-2 pt-1">
               <Link
                 href={`/orders/${id}`}
-                className="inline-flex w-full items-center justify-center rounded-input border border-line bg-surface px-3.5 py-2 text-sm font-medium text-ink-900 hover:bg-surface-2"
+                className="press inline-flex min-h-[44px] w-full items-center justify-center rounded-pill border border-line bg-surface px-4 text-sm font-semibold text-ink-900 hover:bg-surface-2"
               >
                 View order details
               </Link>
@@ -236,7 +276,7 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
                   href={supportUrl}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex w-full items-center justify-center rounded-input px-3.5 py-2 text-sm font-medium text-ink-600 hover:bg-surface-2"
+                  className="press inline-flex min-h-[44px] w-full items-center justify-center rounded-pill px-4 text-sm font-medium text-ink-600 hover:bg-surface-2"
                 >
                   Need help? Chat on WhatsApp
                 </a>
@@ -249,21 +289,41 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
   );
 }
 
+/* --------------------------------------------------------------- helpers */
+
+/** Elevated panel — the Premium Teal surface used across the order screens. */
+function Panel({ className, children }: { className?: string; children: ReactNode }) {
+  return (
+    <div className={cn("rounded-xl2 border border-line/70 bg-surface shadow-card2", className)}>
+      {children}
+    </div>
+  );
+}
+
 /** ETA banner — "Arriving in ~N min", or an accented "Driver arriving" when close. */
 function EtaBanner({ status, etaMinutes }: { status: OrderStatus; etaMinutes: number | null }) {
   const arriving = status === "PICKED_UP" && (etaMinutes == null || etaMinutes <= 2);
   if (arriving) {
     return (
-      <div className="flex items-center gap-2 rounded-card border border-accent/30 bg-accent/10 px-4 py-3">
+      <div
+        className="flex items-center gap-2.5 rounded-xl2 border border-accent/30 bg-accent/10 px-4 py-3.5"
+        aria-live="polite"
+      >
         <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-accent" aria-hidden />
-        <p className="text-sm font-semibold text-accent">Driver arriving</p>
+        <p className="text-base font-bold text-warning">Driver arriving</p>
       </div>
     );
   }
   if (etaMinutes != null) {
     return (
-      <div className="rounded-card border border-primary-600/20 bg-primary-600/5 px-4 py-3">
-        <p className="text-sm font-semibold text-primary-700">Arriving in ~{etaMinutes} min</p>
+      <div
+        className="flex items-baseline justify-between gap-3 rounded-xl2 bg-gradient-to-br from-primary-800 to-primary-700 px-4 py-3.5 shadow-glow"
+        aria-live="polite"
+      >
+        <p className="text-sm font-medium text-white/90">Arriving in</p>
+        <p className="text-2xl font-bold tabular-nums text-white">
+          ~{etaMinutes} <span className="text-base font-semibold">min</span>
+        </p>
       </div>
     );
   }
@@ -288,5 +348,23 @@ function LiveIndicator({ connected }: { connected: boolean }) {
       />
       {connected ? "Live" : "Reconnecting"}
     </span>
+  );
+}
+
+/** Shaped placeholder for the initial track load (§20.4). */
+function TrackSkeleton() {
+  return (
+    <div className="space-y-4" aria-hidden>
+      <Skeleton className="h-[260px] w-full rounded-xl2" />
+      <Skeleton className="h-14 w-full rounded-xl2" />
+      <div className="rounded-xl2 border border-line/70 bg-surface p-5 shadow-card2">
+        {[0, 1, 2, 3, 4].map((i) => (
+          <div key={i} className="flex items-center gap-3.5 py-2">
+            <Skeleton className="h-9 w-9 rounded-full" />
+            <Skeleton className="h-4 w-40" />
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }

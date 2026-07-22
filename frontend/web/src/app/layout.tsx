@@ -2,7 +2,6 @@ import type { Metadata, Viewport } from "next";
 import { Inter, Noto_Sans_Devanagari } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
-import { AppShell } from "@/components/AppShell";
 import { ServiceWorkerRegistration } from "@/components/ServiceWorkerRegistration";
 
 /**
@@ -32,13 +31,16 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
+/**
+ * Root layout owns only the document + providers. The mobile app shell lives in
+ * the `(app)` route group so the `(marketing)` landing page can render
+ * full-bleed and responsive without a bottom tab bar.
+ */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${inter.variable} ${notoDevanagari.variable}`}>
       <body>
-        <Providers>
-          <AppShell>{children}</AppShell>
-        </Providers>
+        <Providers>{children}</Providers>
         {/* Offline service worker (public/sw.js) — registers in production only. */}
         <ServiceWorkerRegistration />
       </body>

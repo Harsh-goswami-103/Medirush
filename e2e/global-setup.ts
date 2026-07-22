@@ -128,7 +128,7 @@ export default async function globalSetup(): Promise<void> {
 
   await prewarm([
     `${WEB_URL}/login`,
-    `${WEB_URL}/`,
+    `${WEB_URL}/shop`,
     `${WEB_URL}/p/vicks-vaporub-50ml`,
     `${WEB_URL}/cart`,
     `${WEB_URL}/checkout`,

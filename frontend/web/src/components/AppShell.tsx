@@ -27,7 +27,7 @@ function Icon({ path, filled }: { path: string; filled?: boolean }) {
 }
 
 const TABS = [
-  { href: "/", label: "Home", icon: "M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10" },
+  { href: "/shop", label: "Home", icon: "M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10" },
   { href: "/orders", label: "Orders", icon: "M7 3h10l2 4v13a1 1 0 01-1 1H6a1 1 0 01-1-1V7zM5 7h14M9 12h6M9 16h6" },
   { href: "/cart", label: "Cart", icon: "M4 5h2l2.4 11.2a1 1 0 001 .8h7.7a1 1 0 001-.8L21 8H7M9 21a1 1 0 100-2 1 1 0 000 2zm8 0a1 1 0 100-2 1 1 0 000 2z", badge: true },
   { href: "/account", label: "Account", icon: "M12 12a4 4 0 100-8 4 4 0 000 8zM5 21a7 7 0 0114 0" },
@@ -46,7 +46,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <nav className="fixed bottom-0 left-1/2 z-40 w-full max-w-md -translate-x-1/2 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)]">
         <div className="grid grid-cols-4">
           {TABS.map((t) => {
-            const active = t.href === "/" ? pathname === "/" : pathname.startsWith(t.href);
+            const active = pathname === t.href || pathname.startsWith(`${t.href}/`);
             return (
               <Link
                 key={t.href}

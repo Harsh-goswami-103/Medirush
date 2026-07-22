@@ -1,10 +1,25 @@
 import type { Metadata } from "next";
 import { TopBar } from "@/components/AppShell";
-import { LastUpdated, LegalList, LegalProse, LegalSection, Op } from "@/components/legal";
+import { LastUpdated, LegalContents, LegalList, LegalProse, LegalSection, Op } from "@/components/legal";
 
 export const metadata: Metadata = { title: "Privacy Policy — MedRush" };
 
 const LAST_UPDATED = "2026-07-12";
+
+/** Jump-list labels — must match each <LegalSection title> verbatim. */
+const SECTIONS = [
+  "Data we collect",
+  "Purpose & lawful basis",
+  "Prescriptions & medical data",
+  "How we share your data",
+  "How long we keep your data",
+  "Your rights",
+  "Cookies & analytics",
+  "Children",
+  "Security",
+  "Grievance Officer",
+  "Changes to this policy",
+];
 
 /**
  * Privacy Policy aligned to India's Digital Personal Data Protection Act, 2023
@@ -17,8 +32,8 @@ export default function PrivacyPage() {
     <div>
       <TopBar back title="Privacy Policy" />
       <LegalProse>
-        <div className="space-y-2">
-          <p className="text-sm leading-6 text-ink-600">
+        <div className="space-y-3">
+          <p className="text-[15px] leading-7 text-ink-600">
             This Privacy Policy explains how <Op>legal entity name</Op> (&ldquo;MedRush&rdquo;,
             &ldquo;we&rdquo;, &ldquo;us&rdquo;), a licensed online pharmacy operating from{" "}
             <Op>registered office address</Op>, collects, uses, shares and protects your personal
@@ -28,6 +43,8 @@ export default function PrivacyPage() {
           </p>
           <LastUpdated date={LAST_UPDATED} />
         </div>
+
+        <LegalContents items={SECTIONS} />
 
         <LegalSection title="Data we collect">
           <p>We collect only the data needed to fulfil your orders and run a compliant pharmacy:</p>
@@ -173,7 +190,7 @@ export default function PrivacyPage() {
             In line with the DPDP Act and the Information Technology Act, you may contact our
             Grievance Officer for any privacy question, request or complaint:
           </p>
-          <div className="rounded-card border border-line bg-surface-2 p-3">
+          <div className="space-y-1.5 rounded-xl2 border border-line/70 bg-surface-2 p-4 text-sm leading-6">
             <p>
               <span className="font-medium text-ink-900">Grievance Officer:</span>{" "}
               <Op>grievance officer name</Op>
