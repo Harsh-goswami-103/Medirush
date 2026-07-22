@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp, type App } from "./app";
-import { getConfig } from "./core/config";
+import { assertNoDevTokenBypass, getConfig } from "./core/config";
 import { disconnectPrisma } from "./core/db";
 import { startJobs, stopJobs } from "./core/jobs";
 import { setShuttingDown } from "./core/lifecycle";
@@ -39,6 +39,7 @@ export async function runShutdown(app: App): Promise<void> {
 
 async function start(): Promise<void> {
   const config = getConfig();
+  assertNoDevTokenBypass(config);
   const app = await buildApp();
 
   await app.listen({ host: "0.0.0.0", port: config.PORT });
