@@ -61,7 +61,9 @@ test("customer places a COD order for an Rx product and uploads a prescription",
   await page.goto(`/p/${PRODUCT.slug}`);
   await expect(page.getByRole("heading", { name: PRODUCT.name }).first()).toBeVisible();
   await expect(page.getByText("Rx", { exact: true }).first()).toBeVisible();
-  await page.getByRole("button", { name: "Add", exact: true }).click();
+  // Scoped to the sticky action bar — the substitutes/similar rails render
+  // their own per-card "Add" buttons on the PDP.
+  await page.getByTestId("pdp-action-bar").getByRole("button", { name: "Add", exact: true }).click();
   await page.getByRole("link", { name: "Go to cart" }).click();
   await page.waitForURL("**/cart");
 

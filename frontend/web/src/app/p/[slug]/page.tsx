@@ -318,8 +318,13 @@ export default function ProductDetailPage({ params }: { params: Promise<{ slug: 
         )}
       </div>
 
-      {/* Sticky action bar — sits above the bottom tab nav (clears it via bottom-16). */}
-      <div className="fixed bottom-16 left-1/2 z-30 w-full max-w-md -translate-x-1/2 border-t border-line bg-surface/95 px-4 py-2.5 backdrop-blur">
+      {/* Sticky action bar — sits above the bottom tab nav (clears it via bottom-16).
+          data-testid anchors e2e: rails above add sibling "Add" buttons, so the
+          specs must scope to THIS bar's button. */}
+      <div
+        data-testid="pdp-action-bar"
+        className="fixed bottom-16 left-1/2 z-30 w-full max-w-md -translate-x-1/2 border-t border-line bg-surface/95 px-4 py-2.5 backdrop-blur"
+      >
         <div className="flex items-center gap-3">
           <div className="flex-1">
             <AddOrStepper product={product as ProductSummary} block />
