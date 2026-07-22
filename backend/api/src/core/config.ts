@@ -144,6 +144,35 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   };
 }
 
+/** FIREBASE_* keys `plugins/auth.ts` needs before it stops accepting dev tokens. */
+const FIREBASE_KEYS = [
+  "FIREBASE_PROJECT_ID",
+  "FIREBASE_CLIENT_EMAIL",
+  "FIREBASE_PRIVATE_KEY",
+] as const;
+
+/**
+ * Boot gate (defence-in-depth over the runtime guard in `plugins/auth.ts`):
+ * refuse to start a production process that could accept a dev token. No-op
+ * outside production. Called from `server.ts` before the app is built.
+ */
+export function assertNoDevTokenBypass(config: Config): void {
+  if (!config.isProduction) return;
+
+  const missing = FIREBASE_KEYS.filter((key) => config[key] === undefined);
+  if (missing.length === 0) return;
+
+  throw new Error(
+    "FATAL: dev-token authentication bypass is reachable in this production process. " +
+      `Missing environment variable(s): ${missing.join(", ")}. ` +
+      "With FIREBASE_PROJECT_ID unset, verifyToken() in backend/api/src/plugins/auth.ts " +
+      "falls back to the `dev:<firebaseUid>:<phone>` bearer token and will accept ANY " +
+      "attacker-chosen identity. Fix: set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and " +
+      "FIREBASE_PRIVATE_KEY (same Firebase project as the web/ops/driver apps) on this " +
+      "service, then restart. Do NOT work around this by changing NODE_ENV.",
+  );
+}
+
 let cached: Config | null = null;
 
 /** Lazily-parsed process env singleton used by the app. */
