@@ -22,10 +22,21 @@ import { getFirebaseAuth, isFirebaseConfigured } from "./firebase";
  * token `dev:<firebaseUid>:<phone>` (accepted only when the backend has no
  * Firebase config and is not production). Browsing is public; the token gates
  * cart, checkout, orders and account.
+ *
+ * NO bearer is ever written to Web Storage. The dev token lives in memory only
+ * (module scope via setAuthToken + React state), so a dev-mode refresh signs
+ * out — the accepted trade. Caveat: an in-memory token is still readable by
+ * JavaScript running on the page; what this buys is that nothing survives a
+ * page close and nothing is reachable from another tab. Moving the production
+ * bearer to an httpOnly cookie is a separate, out-of-scope migration.
  */
 
-/** Dev-token persistence only; Firebase mode never persists (the SDK owns restore). */
-const TOKEN_KEY = "medrush.web.token";
+/**
+ * Key older builds mirrored the dev bearer to. Migration cleanup only — purged
+ * once on mount so existing installs lose their stored token; safe to delete
+ * after a release or two.
+ */
+const LEGACY_TOKEN_KEY = "medrush.web.token";
 
 /** Invisible-reCAPTCHA host node — recreated per OTP attempt (a consumed widget can't be reused). */
 const RECAPTCHA_CONTAINER_ID = "medrush-recaptcha";
@@ -76,15 +87,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const { data } = await api.get<AuthUser>("/v1/me", { token: bearer });
     setUser(data);
     setToken(bearer);
-    // Dev-token mode persists the bearer for restore-on-load. Firebase mode
-    // restores from the SDK — nothing ever reads a mirrored token there.
-    if (!isFirebaseConfigured && typeof window !== "undefined") {
-      localStorage.setItem(TOKEN_KEY, bearer);
-    }
     return data;
   }, []);
 
   useEffect(() => {
+    if (typeof window !== "undefined") localStorage.removeItem(LEGACY_TOKEN_KEY);
+
     if (isFirebaseConfigured) {
       // Firebase persistence is the session source of truth — `loading` resolves
       // on the FIRST onIdTokenChanged callback, never from a stale stored token.
@@ -98,14 +106,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               setAuthToken(null);
               setToken(null);
               setUser(null);
-              localStorage.removeItem(TOKEN_KEY);
               return;
             }
             const idToken = await fbUser.getIdToken();
             setAuthToken(idToken);
             setToken(idToken);
-            // Firebase owns persistence — purge any token mirrored by older builds.
-            localStorage.removeItem(TOKEN_KEY);
             if (first) {
               // Session restore on load: hydrate the profile (sync already
               // happened at the original sign-in). A transient failure keeps
@@ -123,19 +128,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return unsubscribe;
     }
 
-    // Dev mode: restore the stored dev token.
-    const stored = typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
-    if (!stored) {
-      setLoading(false);
-      return;
-    }
-    loadMe(stored)
-      .catch(() => {
-        setAuthToken(null);
-        setToken(null);
-        if (typeof window !== "undefined") localStorage.removeItem(TOKEN_KEY);
-      })
-      .finally(() => setLoading(false));
+    // Dev mode: the bearer is memory-only, so there is nothing to restore — a
+    // reload starts signed out and the gated screens fall back to /login.
+    setLoading(false);
   }, [loadMe]);
 
   const devLogin = useCallback(
@@ -230,7 +225,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthToken(null);
     setUser(null);
     setToken(null);
-    if (typeof window !== "undefined") localStorage.removeItem(TOKEN_KEY);
     // Drop every cached query (notifications, orders, addresses, cart …) so a
     // subsequent sign-in on a shared device never renders the prior user's data.
     qc.clear();

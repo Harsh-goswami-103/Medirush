@@ -25,14 +25,24 @@ import { getFirebaseAuth, RECAPTCHA_CONTAINER_ID } from "./firebase";
  *
  * Dev/local (Firebase unconfigured, dev build): `devLogin` mints the backend
  * dev token `dev:<firebaseUid>:<phone>` — the seeded staff users just work.
- * The dev token (only) is mirrored to localStorage so a refresh restores it;
- * Firebase sessions restore from the SDK's own persistence instead.
+ * It is held in memory only (module scope via setAuthToken + React state), so
+ * a refresh signs the dev session out; Firebase sessions restore from the
+ * SDK's own persistence instead. NO bearer is ever written to Web Storage.
+ * Caveat: an in-memory token is still readable by JavaScript running on the
+ * page — what this buys is that nothing survives a page close and nothing is
+ * reachable from another tab. Moving the production bearer to an httpOnly
+ * cookie is a separate, out-of-scope migration.
  *
  * Production with Firebase unconfigured has NO sign-in path — the login page
  * renders an explicit "not configured" card rather than a dev fallback.
  */
 
-const TOKEN_KEY = "medrush.ops.token";
+/**
+ * Key older builds mirrored the dev bearer to. Migration cleanup only — purged
+ * once on mount so existing installs lose their stored token; safe to delete
+ * after a release or two.
+ */
+const LEGACY_TOKEN_KEY = "medrush.ops.token";
 
 /**
  * Local const on purpose: NODE_ENV is inlined by `next build`, so the whole
@@ -94,7 +104,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthToken(null);
     setUser(null);
     setToken(null);
-    if (typeof window !== "undefined") localStorage.removeItem(TOKEN_KEY);
   }, []);
 
   const logout = useCallback(async () => {
@@ -125,10 +134,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setToken(bearer);
         setUser(data);
         loadedUidRef.current = uid;
-        // Only dev tokens are persisted here; Firebase restores from the SDK.
-        if (!FIREBASE_ENABLED && typeof window !== "undefined") {
-          localStorage.setItem(TOKEN_KEY, bearer);
-        }
         return data;
       } catch (err) {
         if (isDefinitiveAuthRejection(err)) await logout();
@@ -139,21 +144,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   useEffect(() => {
+    if (typeof window !== "undefined") localStorage.removeItem(LEGACY_TOKEN_KEY);
+
     if (!FIREBASE_ENABLED) {
-      // Dev builds restore the persisted dev token. Production without Firebase
-      // has no sign-in path — the login page renders the "not configured" card.
-      const stored =
-        DEV_LOGIN_ENABLED && typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
-      if (!stored) {
-        setLoading(false);
-        return;
-      }
-      // A REJECTED dev token (401/403 — e.g. reseeded DB) is cleared by
-      // applyToken's logout; a transient failure (API not up yet) keeps it in
-      // localStorage so the next reload retries.
-      applyToken(stored, null)
-        .catch(() => undefined)
-        .finally(() => setLoading(false));
+      // The dev bearer is memory-only, so there is nothing to restore — a
+      // reload starts signed out and the console layout falls back to /login.
+      setLoading(false);
       return;
     }
 
