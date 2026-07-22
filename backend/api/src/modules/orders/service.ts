@@ -103,6 +103,11 @@ interface MappableDelivery {
     user: { name: string | null; phone: string };
   };
 }
+interface MappablePayment {
+  refundId: string | null;
+  amountPaise: number;
+  updatedAt: Date;
+}
 interface MappableOrder {
   id: string;
   orderNo: string;
@@ -117,6 +122,8 @@ interface MappableOrder {
   discountPaise: number;
   totalPaise: number;
   couponCode: string | null;
+  deliveryNote: string | null;
+  contactless: boolean;
   requiresRx: boolean;
   rxStatus: RxStatus;
   deliveryOtp: string | null;
@@ -163,6 +170,8 @@ function baseOrder(order: MappableOrder, isOwner: boolean): Order {
     discountPaise: order.discountPaise,
     totalPaise: order.totalPaise,
     couponCode: order.couponCode,
+    deliveryNote: order.deliveryNote,
+    contactless: order.contactless,
     requiresRx: order.requiresRx,
     rxStatus: order.rxStatus,
     // Non-null only for the owning customer once READY (OTP is set at READY).
@@ -205,9 +214,15 @@ function toOrderDetail(
     events: MappableEvent[];
     prescriptions: MappablePrescription[];
     delivery: MappableDelivery | null;
+    payment: MappablePayment | null;
   },
   isOwner: boolean,
 ): OrderDetail {
+  // Refund visibility (Batch 2): the block appears only once a refund is in
+  // flight or settled — refundId stays null while initiation is being claimed.
+  const refundVisible =
+    order.paymentStatus === PaymentStatus.REFUND_INITIATED ||
+    order.paymentStatus === PaymentStatus.REFUNDED;
   return {
     ...baseOrder(order, isOwner),
     events: order.events.map(mapEvent),
@@ -220,6 +235,14 @@ function toOrderDetail(
           vehicleNo: order.delivery.driver.vehicleNo,
         }
       : null,
+    refund:
+      refundVisible && order.payment
+        ? {
+            refundId: order.payment.refundId,
+            amountPaise: order.payment.amountPaise,
+            updatedAt: order.payment.updatedAt.toISOString(),
+          }
+        : null,
   };
 }
 
@@ -230,6 +253,7 @@ const detailInclude = {
   delivery: {
     include: { driver: { include: { user: { select: { name: true, phone: true } } } } },
   },
+  payment: { select: { refundId: true, amountPaise: true, updatedAt: true } },
 } satisfies Prisma.OrderInclude;
 
 /* ------------------------------------------------------------- create (§9.2) */
@@ -256,6 +280,8 @@ interface CheckoutContext {
   requiresRx: boolean;
   couponRow: CouponRow | null;
   cart: { id: string };
+  deliveryNote: string | null;
+  contactless: boolean;
 }
 
 /**
@@ -363,6 +389,9 @@ async function prepareCheckout(userId: string, body: CreateOrderInput): Promise<
     requiresRx,
     couponRow,
     cart: { id: cart.id },
+    // Already trimmed + length-bounded by the contract; absent → null/false.
+    deliveryNote: body.deliveryNote ?? null,
+    contactless: body.contactless ?? false,
   };
 }
 
@@ -373,6 +402,7 @@ async function prepareCheckout(userId: string, body: CreateOrderInput): Promise<
 async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<CreateOrderResult> {
   const prisma = getPrisma();
   const { storeConfig, address, distanceM, lineItems, totals, requiresRx, couponRow, cart } = ctx;
+  const { deliveryNote, contactless } = ctx;
 
   // 6) COD gates (§10.3) then velocity rule (§10.3). These pre-TX checks are a
   // fast-fail optimisation only — the authoritative re-check runs INSIDE the
@@ -445,6 +475,8 @@ async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<Cre
           discountPaise: totals.discountPaise,
           totalPaise: totals.totalPaise,
           couponCode: couponRow ? couponRow.code : null,
+          deliveryNote,
+          contactless,
           requiresRx,
           rxStatus,
           placedAt: now,
@@ -544,6 +576,7 @@ async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<Cre
 async function createPrepaidOrder(userId: string, ctx: CheckoutContext): Promise<CreateOrderResult> {
   const prisma = getPrisma();
   const { address, distanceM, lineItems, totals, requiresRx, couponRow, cart } = ctx;
+  const { deliveryNote, contactless } = ctx;
 
   // Velocity rule (§10.3) — applies to every checkout, prepaid included. Fast
   // fail only; the authoritative re-check runs in-TX (assertFraudGatesInTx).
@@ -593,6 +626,8 @@ async function createPrepaidOrder(userId: string, ctx: CheckoutContext): Promise
           discountPaise: totals.discountPaise,
           totalPaise: totals.totalPaise,
           couponCode: couponRow ? couponRow.code : null,
+          deliveryNote,
+          contactless,
           requiresRx,
           rxStatus: requiresRx ? RxStatus.PENDING : RxStatus.NA,
           // placedAt stays null until payment.captured promotes the order.
@@ -714,6 +749,8 @@ export interface CreateOrderInput {
   addressId: string;
   paymentMethod: PaymentMethod;
   couponCode?: string;
+  deliveryNote?: string;
+  contactless?: boolean;
 }
 
 /* ------------------------------------------------------------- COD + fraud */
@@ -846,7 +883,7 @@ interface CouponRow {
   perUserLimit: number;
 }
 
-async function validateCoupon(
+export async function validateCoupon(
   code: string,
   itemsPaise: number,
   userId: string,

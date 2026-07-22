@@ -6,6 +6,7 @@ import { useCart } from "@/lib/cart";
 import { useAuth } from "@/lib/auth";
 import { useUnreadCount } from "@/lib/notifications";
 import { cn } from "@/lib/cn";
+import { InstallPrompt } from "@/components/InstallPrompt";
 
 /** 24px stroke icons for the tab bar. */
 function Icon({ path, filled }: { path: string; filled?: boolean }) {
@@ -39,6 +40,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="mx-auto flex min-h-dvh max-w-md flex-col bg-surface shadow-lg">
       <main className="flex-1 pb-[4.5rem]">{children}</main>
+
+      <InstallPrompt />
 
       <nav className="fixed bottom-0 left-1/2 z-40 w-full max-w-md -translate-x-1/2 border-t border-line bg-surface pb-[env(safe-area-inset-bottom)]">
         <div className="grid grid-cols-4">

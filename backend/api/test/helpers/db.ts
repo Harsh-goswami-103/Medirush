@@ -18,6 +18,7 @@ const VOLATILE_TABLES = [
   "AuditLog",
   "Notification",
   "DeviceToken",
+  "StockAlert",
   "TempLog",
   "AppSetting",
   "StoreConfig",

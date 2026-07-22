@@ -23,7 +23,9 @@ import {
 } from "@medrush/contracts";
 import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
+import { logger } from "../../core/logger";
 import { toImageUrl } from "../catalog/search";
+import { notifyUser } from "../notifications/service";
 
 /**
  * Ops inventory management (BLUEPRINT §7.2 ops rows; RBAC §8.3: INVENTORY or
@@ -491,6 +493,44 @@ export async function deactivateCategory(id: string, actor: OpsActor): Promise<{
   return { ok: true };
 }
 
+/* ------------------------------------------------------- back-in-stock */
+
+/**
+ * Back-in-stock fan-out — call post-commit when a receipt/adjustment takes a
+ * product from 0 to >0. Best-effort like the orders-lifecycle notify calls
+ * (`notifyUser` itself never throws): any failure is logged, never raised into
+ * the committed mutation. Delivered alerts are deleted so the next 0→N restock
+ * only notifies re-subscribers.
+ */
+async function fireStockAlerts(productId: string): Promise<void> {
+  try {
+    const prisma = getPrisma();
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      select: { name: true, slug: true },
+    });
+    if (!product) return;
+    const alerts = await prisma.stockAlert.findMany({
+      where: { productId },
+      select: { id: true, userId: true },
+    });
+    if (alerts.length === 0) return;
+    for (const alert of alerts) {
+      await notifyUser({
+        userId: alert.userId,
+        type: "PRODUCT_BACK_IN_STOCK",
+        title: "Back in stock",
+        body: `${product.name} is available again — order now.`,
+        data: { productId, slug: product.slug },
+      });
+    }
+    // Only the rows just notified — a concurrent new subscriber is preserved.
+    await prisma.stockAlert.deleteMany({ where: { id: { in: alerts.map((a) => a.id) } } });
+  } catch (error) {
+    logger.error({ err: error, productId }, "stock-alert fan-out failed");
+  }
+}
+
 /* ------------------------------------------------------------ GRN batches */
 
 /**
@@ -514,7 +554,7 @@ export async function receiveBatch(
   }
 
   try {
-    return await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const product = await tx.product.findUnique({ where: { id: productId }, select: { id: true } });
       if (!product) throw new AppError("NOT_FOUND", "Product not found", 404);
 
@@ -567,6 +607,12 @@ export async function receiveBatch(
 
       return { batch: toBatch(batch), product: { id: updated.id, stockQty: updated.stockQty } };
     });
+
+    // Post-commit: a GRN only increments, so prev = new − received.
+    if (result.product.stockQty - body.qtyReceived === 0 && result.product.stockQty > 0) {
+      await fireStockAlerts(productId);
+    }
+    return result;
   } catch (e) {
     rethrowKnown(e);
   }
@@ -583,7 +629,7 @@ export async function receiveBatch(
 export async function adjustStock(body: StockAdjustBody, actor: OpsActor): Promise<StockAdjustResult> {
   const prisma = getPrisma();
 
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const product = await tx.product.findUnique({
       where: { id: body.productId },
       select: { id: true },
@@ -658,6 +704,13 @@ export async function adjustStock(body: StockAdjustBody, actor: OpsActor): Promi
 
     return { adjustmentId: adjustment.id, productId: body.productId, stockQty: after.stockQty };
   });
+
+  // Post-commit: a positive delta resurrecting a zeroed product is the
+  // back-in-stock edge (prev = new − delta, read under the row lock in-tx).
+  if (body.delta > 0 && result.stockQty - body.delta === 0) {
+    await fireStockAlerts(body.productId);
+  }
+  return result;
 }
 
 /* ---------------------------------------------------------------- alerts */

@@ -50,7 +50,9 @@ test("customer places a COD order for a non-Rx product (golden path)", async ({
   // backend/api/test/cors-preflight.test.ts pins it — so a red run here is a
   // real regression, not that known blocker.
   await expect(page.getByRole("heading", { name: PRODUCT.name }).first()).toBeVisible();
-  await page.getByRole("button", { name: "Add", exact: true }).click();
+  // Scoped to the sticky action bar — the substitutes/similar rails render
+  // their own per-card "Add" buttons on the PDP.
+  await page.getByTestId("pdp-action-bar").getByRole("button", { name: "Add", exact: true }).click();
   await page.getByRole("link", { name: "Go to cart" }).click();
   await page.waitForURL("**/cart");
 

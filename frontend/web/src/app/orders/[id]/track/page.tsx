@@ -118,7 +118,8 @@ export default function TrackOrderPage({ params }: { params: Promise<{ id: strin
             {/* ETA banner */}
             {!cancelled && <EtaBanner status={track.status} etaMinutes={track.etaMinutes} />}
 
-            <div className="flex items-center justify-between gap-2">
+            {/* aria-live so screen readers hear status transitions (§20.6). */}
+            <div className="flex items-center justify-between gap-2" aria-live="polite">
               <p className="text-sm text-ink-600">Current status</p>
               <OrderStatusBadge status={track.status} />
             </div>

@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Notification } from "@medrush/contracts";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { isPushConfigured } from "@/lib/firebase";
+import { enableWebPush } from "@/lib/push";
 import { useNotifications } from "@/lib/notifications";
 import { timeAgo } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -34,6 +36,40 @@ export default function NotificationsPage() {
   }, [loading, user, router]);
 
   const notifQuery = useNotifications();
+
+  // Push opt-in card — only when push is configured for this build AND the
+  // browser hasn't decided yet ("default"). Local dev-token builds never show it.
+  const [showPushCard, setShowPushCard] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+  useEffect(() => {
+    setShowPushCard(
+      isPushConfigured &&
+        typeof window !== "undefined" &&
+        "Notification" in window &&
+        Notification.permission === "default",
+    );
+  }, []);
+
+  async function optIntoPush() {
+    setPushBusy(true);
+    try {
+      const result = await enableWebPush();
+      if (result === "enabled") {
+        toast.push({ type: "success", message: "Push notifications enabled" });
+        setShowPushCard(false);
+      } else if (result === "denied") {
+        toast.push({ type: "info", message: "Push stays off — you can enable it in browser settings" });
+        setShowPushCard(false);
+      } else {
+        toast.push({ type: "info", message: "Push isn't supported in this browser" });
+        setShowPushCard(false);
+      }
+    } catch {
+      toast.push({ type: "error", message: "Couldn't enable push — please try again" });
+    } finally {
+      setPushBusy(false);
+    }
+  }
 
   const markRead = useMutation({
     mutationFn: (id: string) => api.post<{ ok: boolean }>(`/v1/notifications/${id}/read`),
@@ -89,6 +125,18 @@ export default function NotificationsPage() {
       />
 
       <div className="p-4">
+        {showPushCard && (
+          <div className="mb-3 rounded-card border border-primary-600/20 bg-primary-600/5 p-4">
+            <p className="text-sm font-semibold text-ink-900">Get order updates instantly</p>
+            <p className="mt-1 text-sm text-ink-600">
+              Turn on push notifications to hear the moment your order is packed, picked up and
+              arriving.
+            </p>
+            <Button className="mt-3" loading={pushBusy} onClick={() => void optIntoPush()}>
+              Enable push notifications
+            </Button>
+          </div>
+        )}
         {notifQuery.isError ? (
           <ErrorState
             message={(notifQuery.error as Error).message}

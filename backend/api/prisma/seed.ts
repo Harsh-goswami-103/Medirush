@@ -375,6 +375,39 @@ async function main(): Promise<void> {
   await prisma.stockAdjustment.deleteMany();
   await prisma.batch.deleteMany();
 
+  // 1b ── demo coupons (upsert by code; public ones feed GET /v1/coupons) ────
+  const year = new Date().getFullYear();
+  const couponWindow = {
+    startsAt: new Date(`${year}-01-01T00:00:00+05:30`),
+    endsAt: new Date(`${year + 1}-01-01T00:00:00+05:30`),
+  };
+  const DEMO_COUPONS = [
+    {
+      code: "WELCOME50",
+      kind: "FLAT",
+      valuePaiseOrPct: 5000,
+      minOrderPaise: 29900,
+      description: "Flat ₹50 off your order above ₹299",
+      isPublic: true,
+    },
+    {
+      code: "SAVE20",
+      kind: "PERCENT",
+      valuePaiseOrPct: 20,
+      maxDiscountPaise: 10000,
+      minOrderPaise: 9900,
+      description: "20% off up to ₹100 on all orders",
+      isPublic: true,
+    },
+  ] as const;
+  for (const c of DEMO_COUPONS) {
+    await prisma.coupon.upsert({
+      where: { code: c.code },
+      create: { ...c, ...couponWindow, perUserLimit: 5, isActive: true },
+      update: { ...c, ...couponWindow, isActive: true },
+    });
+  }
+
   // 2 ── store config (single row id="store") ───────────────────────────────
   const storeConfig = {
     name: "MedRush Pharmacy",

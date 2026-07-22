@@ -1,12 +1,12 @@
-import { FirebaseError, getApp, getApps, initializeApp } from "firebase/app";
+import { FirebaseError, getApp, getApps, initializeApp, type FirebaseApp } from "firebase/app";
 import { getAuth, type Auth } from "firebase/auth";
 
 /**
- * Firebase web SDK — lazy singleton for phone-OTP auth (§8). Config comes from
- * NEXT_PUBLIC_FIREBASE_* (inlined at build time); when unset the app runs in
- * the dev-token mode instead (see lib/auth.tsx) and nothing here initialises.
- * Client-only: consumers are "use client" modules and `getFirebaseAuth` guards
- * against server execution.
+ * Firebase web SDK — lazy singleton for phone-OTP auth (§8) and web push.
+ * Config comes from NEXT_PUBLIC_FIREBASE_* (inlined at build time); when unset
+ * the app runs in the dev-token mode instead (see lib/auth.tsx) and nothing
+ * here initialises. Client-only: consumers are "use client" modules and the
+ * getters guard against server execution.
  */
 
 const FIREBASE_CONFIG = {
@@ -14,9 +14,14 @@ const FIREBASE_CONFIG = {
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+  // Push-only — auth works without it; getToken() requires it.
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
 };
 
-/** True when the Firebase web app is fully configured (all four keys present). */
+/** Web-push key pair (Firebase Console ▸ Cloud Messaging ▸ Web Push certificates). */
+export const FIREBASE_VAPID_KEY = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY;
+
+/** True when the Firebase web app is fully configured (all four core keys present). */
 export const isFirebaseConfigured = Boolean(
   FIREBASE_CONFIG.apiKey &&
     FIREBASE_CONFIG.authDomain &&
@@ -24,19 +29,27 @@ export const isFirebaseConfigured = Boolean(
     FIREBASE_CONFIG.appId,
 );
 
+/** True when web push can be wired (core config + sender id + VAPID key). */
+export const isPushConfigured =
+  isFirebaseConfigured && Boolean(FIREBASE_CONFIG.messagingSenderId && FIREBASE_VAPID_KEY);
+
 let authInstance: Auth | null = null;
 
-/** Lazily initialise the app + Auth singleton. Throws when unconfigured or on the server. */
-export function getFirebaseAuth(): Auth {
+/** Lazily initialise (or reuse) the Firebase app. Throws when unconfigured or on the server. */
+export function getFirebaseApp(): FirebaseApp {
   if (typeof window === "undefined") {
-    throw new Error("getFirebaseAuth is client-only");
+    throw new Error("getFirebaseApp is client-only");
   }
   if (!isFirebaseConfigured) {
     throw new Error("Firebase is not configured (set NEXT_PUBLIC_FIREBASE_*)");
   }
+  return getApps().length > 0 ? getApp() : initializeApp(FIREBASE_CONFIG);
+}
+
+/** Lazily initialise the Auth singleton on the shared app. */
+export function getFirebaseAuth(): Auth {
   if (!authInstance) {
-    const app = getApps().length > 0 ? getApp() : initializeApp(FIREBASE_CONFIG);
-    authInstance = getAuth(app);
+    authInstance = getAuth(getFirebaseApp());
   }
   return authInstance;
 }

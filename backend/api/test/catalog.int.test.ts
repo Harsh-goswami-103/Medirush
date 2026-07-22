@@ -149,6 +149,39 @@ describe("catalog endpoints", () => {
     expect(body.meta.nextCursor).toBeNull();
   });
 
+  it("search matches a short query against a REALISTIC long doc (word similarity)", async () => {
+    // Regression: `doc % q` used WHOLE-STRING similarity — a short query
+    // against a production-shaped doc (name + brand + composition + long
+    // searchKeywords) scores ~0.07, far below the 0.3 threshold, so every
+    // realistic query returned zero rows. Word similarity is the correct
+    // pg_trgm mode here (exact word "dolo" inside the doc scores 1.0).
+    const category = await seedCategory();
+    const dolo = await seedProduct(category.id, {
+      name: "Dolo 650 Tablet",
+      brand: "Micro Labs",
+      composition: "Paracetamol 650mg",
+      searchKeywords: "paracetamol acetaminophen fever headache bodyache pain relief bukhar",
+    });
+    const unrelated = await seedProduct(category.id, {
+      name: "Volini Pain Relief Gel 75g",
+      brand: "Sun Pharma",
+      composition: "Diclofenac Diethylamine",
+      searchKeywords: "sprain muscle pain gel topical",
+    });
+
+    // The exact brand-name word customers actually type.
+    const byName = await app.inject({ method: "GET", url: "/v1/products?search=dolo" });
+    expect(byName.statusCode).toBe(200);
+    const nameIds = (byName.json() as ListBody).data.map((p) => p.id);
+    expect(nameIds).toContain(dolo.id);
+    expect(nameIds).not.toContain(unrelated.id);
+
+    // A close-miss typo should still fuzzy-match the composition word.
+    const typo = await app.inject({ method: "GET", url: "/v1/products?search=paracetmol" });
+    expect(typo.statusCode).toBe(200);
+    expect((typo.json() as ListBody).data.map((p) => p.id)).toContain(dolo.id);
+  });
+
   it("short search (<3 chars) falls back to name-prefix match", async () => {
     const category = await seedCategory();
     const dolo = await seedProduct(category.id, { name: "Dolo 650" });

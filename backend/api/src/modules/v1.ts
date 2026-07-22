@@ -6,6 +6,7 @@ import { deviceRoutes } from "./devices/routes";
 import { notificationRoutes } from "./notifications/routes";
 import { catalogRoutes } from "./catalog/routes";
 import { cartRoutes } from "./cart/routes";
+import { couponRoutes } from "./coupons/routes";
 import { orderRoutes } from "./orders/routes";
 import { opsOrderRoutes } from "./orders/opsRoutes";
 import { driverRoutes } from "./drivers/routes";
@@ -51,4 +52,6 @@ export const v1Routes: FastifyPluginAsync = async (app) => {
   await app.register(dispatchOpsRoutes);
   // Phase 7 — audit-trail read side (DPDP erasure + admin action review)
   await app.register(adminAuditRoutes);
+  // Feature-gap Batch 2 — customer offers surface + coupon apply-preview
+  await app.register(couponRoutes);
 };

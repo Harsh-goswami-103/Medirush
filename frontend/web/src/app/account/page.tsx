@@ -78,6 +78,22 @@ export default function AccountPage() {
       }),
   });
 
+  // UpdateAddressBody already accepts `isDefault`; the server clears the
+  // previous default in the same transaction — the UI just never sent it.
+  const setDefaultAddr = useMutation({
+    mutationFn: (addrId: string) =>
+      api.patch<Address>(`/v1/addresses/${addrId}`, { isDefault: true }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["addresses"] });
+      toast.push({ type: "success", message: "Default address updated" });
+    },
+    onError: (err) =>
+      toast.push({
+        type: "error",
+        message: err instanceof ApiError ? err.message : "Could not set the default address",
+      }),
+  });
+
   if (loading) {
     return (
       <div className="flex min-h-dvh items-center justify-center">
@@ -217,6 +233,18 @@ export default function AccountPage() {
                       </Button>
                     </div>
                   </div>
+                  {!a.isDefault && (
+                    <button
+                      type="button"
+                      className="mt-1 text-xs font-medium text-primary-700 disabled:opacity-50"
+                      disabled={setDefaultAddr.isPending}
+                      onClick={() => setDefaultAddr.mutate(a.id)}
+                    >
+                      {setDefaultAddr.isPending && setDefaultAddr.variables === a.id
+                        ? "Setting…"
+                        : "Set as default"}
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -257,16 +285,31 @@ export default function AccountPage() {
         </Card>
 
         {/* ------------ help (hidden when no support phone is configured) */}
-        {supportUrl && (
-          <a
-            href={supportUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex w-full items-center justify-center gap-2 rounded-input border border-success/30 bg-success/5 px-3.5 py-2 text-sm font-medium text-success hover:bg-success/10"
-          >
-            <WhatsAppIcon />
-            Chat with us on WhatsApp
-          </a>
+        {(supportUrl || store?.supportPhone) && (
+          <div className="flex gap-2">
+            {supportUrl && (
+              <a
+                href={supportUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-input border border-success/30 bg-success/5 px-3.5 py-2 text-sm font-medium text-success hover:bg-success/10"
+              >
+                <WhatsAppIcon />
+                WhatsApp
+              </a>
+            )}
+            {store?.supportPhone && (
+              <a
+                href={`tel:${store.supportPhone}`}
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-input border border-primary-600/30 bg-primary-600/5 px-3.5 py-2 text-sm font-medium text-primary-700 hover:bg-primary-600/10"
+              >
+                <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72c.13.96.36 1.9.7 2.81a2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0122 16.92z" />
+                </svg>
+                Call us
+              </a>
+            )}
+          </div>
         )}
 
         {/* -------------------------------------------------------- sign out */}

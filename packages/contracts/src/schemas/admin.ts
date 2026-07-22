@@ -300,6 +300,10 @@ export const CouponSchema = z.object({
   startsAt: IsoDateTimeSchema,
   endsAt: IsoDateTimeSchema,
   isActive: z.boolean(),
+  /** Customer-facing offer copy (shown on GET /v1/coupons). */
+  description: z.string().nullable(),
+  /** Listed on the customer offers surface (GET /v1/coupons). */
+  isPublic: z.boolean(),
   /** Total redemptions so far. */
   redemptionCount: CountSchema,
 });
@@ -317,6 +321,8 @@ const couponBodyBase = z.object({
   startsAt: IsoDateTimeSchema,
   endsAt: IsoDateTimeSchema,
   isActive: z.boolean().optional(),
+  description: z.string().trim().min(1).max(200).optional(),
+  isPublic: z.boolean().optional(),
 });
 
 /** POST /v1/admin/coupons */

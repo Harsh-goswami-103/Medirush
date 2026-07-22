@@ -1,13 +1,17 @@
 /**
  * Public store / catalog / serviceability endpoints (BLUEPRINT §7.2 — ⭘ public).
  *
- * | Endpoint                          | Body / Query / Params        | Response data                |
- * |-----------------------------------|------------------------------|------------------------------|
- * | GET  /v1/store                    | —                            | StoreInfoSchema              |
- * | GET  /v1/categories               | —                            | CategorySchema[]             |
- * | GET  /v1/products                 | ProductListQuerySchema       | ProductSummarySchema[] + meta|
- * | GET  /v1/products/:slug           | ProductParamsSchema          | ProductSchema                |
- * | POST /v1/serviceability           | ServiceabilityBodySchema     | ServiceabilityResultSchema   |
+ * | Endpoint                              | Body / Query / Params        | Response data                |
+ * |---------------------------------------|------------------------------|------------------------------|
+ * | GET  /v1/store                        | —                            | StoreInfoSchema              |
+ * | GET  /v1/categories                   | —                            | CategorySchema[]             |
+ * | GET  /v1/products                     | ProductListQuerySchema       | ProductSummarySchema[] + meta|
+ * | GET  /v1/products/:slug               | ProductParamsSchema          | ProductSchema                |
+ * | GET  /v1/products/:slug/substitutes   | ProductParamsSchema          | ProductSummarySchema[]       |
+ * | POST /v1/serviceability               | ServiceabilityBodySchema     | ServiceabilityResultSchema   |
+ * | POST /v1/products/:slug/stock-alert   | ProductParamsSchema (auth)   | StockAlertStatusSchema       |
+ * | GET  /v1/products/:slug/stock-alert   | ProductParamsSchema (auth)   | StockAlertStatusSchema       |
+ * | DELETE /v1/products/:slug/stock-alert | ProductParamsSchema (auth)   | StockAlertStatusSchema       |
  */
 import { z } from "zod";
 import { ScheduleClassSchema } from "../enums";
@@ -137,11 +141,39 @@ export const ProductSchema = ProductSummarySchema.extend({
 });
 export type Product = z.infer<typeof ProductSchema>;
 
-/** GET /v1/products?category&search&cursor&limit — search is pg_trgm fuzzy. */
+/**
+ * Tri-state boolean query param. Unset → no filter; `"true"`/`"1"` → true;
+ * anything else → false. NOT `z.coerce.boolean()` — `Boolean("false") === true`.
+ */
+const TriStateBoolQuery = z
+  .string()
+  .optional()
+  .transform((v) => (v === undefined ? undefined : v === "true" || v === "1"));
+
+/** Sort orders beyond the default id-keyset listing. */
+export const ProductSortSchema = z.enum(["price_asc", "price_desc", "discount", "name"]);
+export type ProductSort = z.infer<typeof ProductSortSchema>;
+
+/**
+ * GET /v1/products?category&search&cursor&limit&sort&inStock&requiresRx&minPricePaise&maxPricePaise&discounted
+ * — search is pg_trgm fuzzy (word similarity). Filters compose with category
+ * AND search. `sort` (like `search`) returns top-N only — `nextCursor` is null
+ * because the keyset cursor is id-ordered (documented simplification).
+ */
 export const ProductListQuerySchema = CursorQuerySchema.extend({
   /** Category slug filter. */
   category: SlugSchema.optional(),
   search: z.string().trim().min(1).max(100).optional(),
+  sort: ProductSortSchema.optional(),
+  /** true → only in-stock; false → only out-of-stock (rarely useful). */
+  inStock: TriStateBoolQuery,
+  /** true → Rx-only; false → OTC-only. */
+  requiresRx: TriStateBoolQuery,
+  /** Selling-price band, inclusive, in paise. */
+  minPricePaise: z.coerce.number().int().nonnegative().optional(),
+  maxPricePaise: z.coerce.number().int().nonnegative().optional(),
+  /** true → only discounted (price < MRP). */
+  discounted: TriStateBoolQuery,
 });
 export type ProductListQuery = z.infer<typeof ProductListQuerySchema>;
 export const ProductListResponseSchema = paginatedEnvelope(ProductSummarySchema);
@@ -149,6 +181,18 @@ export const ProductListResponseSchema = paginatedEnvelope(ProductSummarySchema)
 export const ProductParamsSchema = z.object({ slug: SlugSchema });
 export type ProductParams = z.infer<typeof ProductParamsSchema>;
 export const GetProductResponseSchema = envelope(ProductSchema);
+
+/**
+ * GET /v1/products/:slug/substitutes — same-composition alternatives (§17 v1.1
+ * "substitutes suggestions"): active products whose normalized `composition`
+ * matches, Rx-parity enforced, in-stock first then price ASC, self excluded.
+ */
+export const ListSubstitutesResponseSchema = envelope(z.array(ProductSummarySchema));
+
+/** Back-in-stock alert state for the calling customer on one product. */
+export const StockAlertStatusSchema = z.object({ subscribed: z.boolean() });
+export type StockAlertStatus = z.infer<typeof StockAlertStatusSchema>;
+export const StockAlertResponseSchema = envelope(StockAlertStatusSchema);
 
 /* -------------------------------------------------- POST /serviceability */
 

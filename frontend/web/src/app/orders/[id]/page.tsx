@@ -17,6 +17,7 @@ import { api, ApiError, apiErrorMessage } from "@/lib/api";
 import { API_BASE_URL, whatsappUrl } from "@/lib/env";
 import { useAuth } from "@/lib/auth";
 import { useStore } from "@/lib/store";
+import { useReorder } from "@/lib/reorder";
 import { useOrderLive } from "@/lib/socket";
 import { collectPayment, pollUntilPaid } from "@/lib/payment";
 import { formatDateTime, formatPaise } from "@/lib/format";
@@ -59,6 +60,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const toast = useToast();
   const { user, token, loading: authLoading } = useAuth();
   const { store } = useStore();
+  const reorder = useReorder();
 
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -280,9 +282,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       ) : (
         <>
           <div className={cn("space-y-4 p-4", showActions ? "pb-32" : "pb-6")}>
-            {/* Status header */}
+            {/* Status header — aria-live announces live transitions (§20.6). */}
             <Card className="p-4">
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2" aria-live="polite">
                 <OrderStatusBadge status={order.status} />
                 <RxBadge status={order.rxStatus} />
               </div>
@@ -334,6 +336,23 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   </Button>
                 </Card>
               ))}
+
+            {/* Refund visibility — full-amount refunds (§18.3) */}
+            {order.refund && (
+              <Card className="border-info/30 bg-info/5 p-4">
+                <p className="text-sm font-semibold text-info">
+                  {order.paymentStatus === "REFUNDED" ? "Refund completed" : "Refund initiated"}
+                </p>
+                <p className="mt-1 text-sm text-ink-600">
+                  {formatPaise(order.refund.amountPaise)} is being returned to your original payment
+                  method{order.paymentStatus === "REFUNDED" ? "." : " — banks typically take 5–7 working days."}
+                </p>
+                <p className="mt-1 text-xs text-ink-400">
+                  {order.refund.refundId ? `Ref: ${order.refund.refundId} · ` : ""}
+                  Updated {formatDateTime(order.refund.updatedAt)}
+                </p>
+              </Card>
+            )}
 
             {/* Delivery OTP — owner-only, READY+ (server returns null otherwise) */}
             {order.deliveryOtp && (
@@ -467,6 +486,22 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               </ul>
             </Section>
 
+            {/* Order again — repopulate the cart from this order's lines (§17 v1). */}
+            {order.items.length > 0 && (
+              <Button
+                variant="secondary"
+                className="w-full"
+                loading={reorder.isPending}
+                onClick={() =>
+                  reorder.mutate({
+                    items: order.items.map((it) => ({ productId: it.productId, qty: it.qty })),
+                  })
+                }
+              >
+                Order again
+              </Button>
+            )}
+
             {/* Delivery address */}
             <Section title="Delivery address">
               {order.addressSnapshot.label && (
@@ -485,6 +520,16 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 <p className="text-sm text-ink-600">Near {order.addressSnapshot.landmark}</p>
               )}
               <p className="text-sm text-ink-600">{order.addressSnapshot.pincode}</p>
+              {(order.deliveryNote || order.contactless) && (
+                <div className="mt-2 border-t border-line pt-2">
+                  {order.contactless && (
+                    <p className="text-xs font-medium text-primary-700">Contactless delivery</p>
+                  )}
+                  {order.deliveryNote && (
+                    <p className="text-xs text-ink-600">Note: {order.deliveryNote}</p>
+                  )}
+                </div>
+              )}
             </Section>
 
             {/* Bill */}
