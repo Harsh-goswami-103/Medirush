@@ -1,0 +1,58 @@
+name: Scheduled Code Review Issues
+
+on:
+  schedule:
+    - cron: "0 9 * * *"   # Every Monday at 9:00 AM UTC — adjust as needed
+  workflow_dispatch:        # lets you also trigger it manually from the Actions tab
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  code-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Claude code review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Review this codebase across the following categories:
+
+              1. Security — injection risks, auth/access-control flaws,
+                 secrets or credentials in code, unsafe deserialization,
+                 vulnerable/outdated dependencies, insecure defaults.
+              2. Performance — inefficient algorithms or queries, N+1
+                 queries, unnecessary re-renders/recomputation, memory
+                 leaks, blocking calls on hot paths.
+              3. Bugs — logic errors, incorrect edge-case handling, race
+                 conditions, null/undefined handling issues.
+              4. Maintainability / best practices — significant code
+                 smells, duplicated logic, missing error handling, poor
+                 test coverage in critical paths.
+
+            For each meaningful finding:
+              - First check open issues (use `gh issue list`) to avoid
+                filing a duplicate of something already reported.
+              - Create a new issue with `gh issue create` that includes:
+                  - A clear, specific title prefixed with its category,
+                    e.g. "[Security] ...", "[Performance] ...", "[Bug] ...",
+                    "[Maintainability] ..."
+                  - The file(s) and approximate line numbers involved
+                  - What the problem is and why it matters
+                  - A suggested fix or direction
+              - Apply a matching label to the issue if the label exists in
+                the repo (e.g. `security`, `performance`, `bug`); if it
+                doesn't exist, skip labeling rather than failing.
+
+            Group minor style nitpicks into a single "[Maintainability]
+            Code style notes" issue instead of filing one issue per
+            nitpick. Prioritize security and correctness issues over
+            style — don't let nitpicks crowd out real findings. Do not
+            open an issue if nothing significant is found in a category —
+            just skip it.
+          claude_args: "--max-turns 30 --model claude-sonnet-5"
