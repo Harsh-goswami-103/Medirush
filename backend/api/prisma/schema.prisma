@@ -67,6 +67,12 @@ enum OfferStatus {
   EXPIRED
 }
 
+enum ReturnStatus {                               // customer post-delivery issue report
+  REQUESTED
+  APPROVED
+  REJECTED
+}
+
 enum TxnType {
   CREDIT
   DEBIT
@@ -111,12 +117,24 @@ model User {
   riskFlag    String   @default("NONE")     // NONE|WATCH|COD_BLOCKED|BLOCKED
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  /** Shareable referral code (generated at first /me read; unique, uppercase). */
+  referralCode String? @unique
   addresses   Address[]
   orders      Order[]
   driver      DriverProfile?
   cart        Cart?
   devices     DeviceToken[]
   stockAlerts StockAlert[]
+  ratings     Rating[]
+  returns     ReturnRequest[]
+  patients    Patient[]
+  prescriptions Prescription[]
+  notificationPreference NotificationPreference?
+  refillReminders RefillReminder[]
+  wishlist    Wishlist[]
+  coupons     Coupon[]                            // personal (referral/welcome) coupons
+  referralsMade     Referral[] @relation("ReferralReferrer")
+  referralReceived  Referral?  @relation("ReferralReferee")
 }
 
 model Address {
@@ -168,12 +186,135 @@ model Product {
   lowStockThreshold Int           @default(10)
   maxPerOrder       Int           @default(10)
   searchKeywords    String        @default("")  // generics/salt names
+  /* Structured medical info (§17 PDP) — free text, pharmacist-authored. */
+  uses              String        @default("")
+  directions        String        @default("")
+  sideEffects       String        @default("")
+  storageInfo       String        @default("")
+  warnings          String        @default("")
+  manufacturer      String?
   isActive          Boolean       @default(true)
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
   batches           Batch[]
   stockAlerts       StockAlert[]
+  refillReminders   RefillReminder[]
+  wishlistedBy      Wishlist[]
+  concerns          ProductHealthConcern[]
   @@index([categoryId, isActive])
+}
+
+model HealthConcern {                              // "shop by health concern" browse (§17 discovery)
+  id        String  @id @default(cuid())
+  name      String
+  slug      String  @unique
+  imageUrl  String?                                // R2 key or absolute URL
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+  products  ProductHealthConcern[]
+}
+
+model ProductHealthConcern {                       // M:N product ↔ concern
+  productId String
+  product   Product       @relation(fields: [productId], references: [id])
+  concernId String
+  concern   HealthConcern @relation(fields: [concernId], references: [id])
+  @@id([productId, concernId])
+  @@index([concernId])
+}
+
+model Wishlist {                                   // saved-for-later / favourites
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  createdAt DateTime @default(now())
+  @@unique([userId, productId])
+  @@index([userId, createdAt])
+}
+
+model RefillReminder {                             // repeat-medicine nudge (§17 v1.1)
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id])
+  productId      String
+  product        Product   @relation(fields: [productId], references: [id])
+  intervalDays   Int                               // 7…180
+  nextDueAt      DateTime
+  isActive       Boolean   @default(true)
+  lastNotifiedAt DateTime?
+  createdAt      DateTime  @default(now())
+  @@unique([userId, productId])
+  @@index([isActive, nextDueAt])                   // daily sweep lookup
+}
+
+model Patient {                                    // dependent profile ("who is this for")
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  name      String
+  relation  String                                 // SELF|SPOUSE|CHILD|PARENT|OTHER
+  dob       DateTime?
+  gender    String?                                // M|F|OTHER
+  createdAt DateTime  @default(now())
+  orders    Order[]
+  prescriptions Prescription[]
+  @@index([userId])
+}
+
+model Rating {                                     // post-delivery feedback (§17 v1.1)
+  id          String   @id @default(cuid())
+  orderId     String   @unique                     // one rating per order
+  order       Order    @relation(fields: [orderId], references: [id])
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  orderStars  Int                                  // 1..5 overall
+  driverStars Int?                                 // 1..5; null when never assigned
+  comment     String?
+  createdAt   DateTime @default(now())
+  @@index([userId, createdAt])
+}
+
+model ReturnRequest {                              // report an issue with a delivered order
+  id             String       @id @default(cuid())
+  orderId        String
+  order          Order        @relation(fields: [orderId], references: [id])
+  userId         String
+  user           User         @relation(fields: [userId], references: [id])
+  reason         String                            // DAMAGED|WRONG_ITEM|MISSING|EXPIRED|OTHER
+  note           String?
+  status         ReturnStatus @default(REQUESTED)
+  resolutionNote String?
+  createdAt      DateTime     @default(now())
+  resolvedAt     DateTime?
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+}
+
+model NotificationPreference {                     // per-channel consent (TRAI/DPDP relevant)
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id])
+  orderUpdates    Boolean  @default(true)          // transactional
+  promotions      Boolean  @default(true)          // marketing — opt-out honoured
+  refillReminders Boolean  @default(true)
+  updatedAt       DateTime @updatedAt
+}
+
+model Referral {                                   // referrer → referee attribution (§17 v1.1)
+  id               String    @id @default(cuid())
+  referrerId       String
+  referrer         User      @relation("ReferralReferrer", fields: [referrerId], references: [id])
+  refereeId        String    @unique               // a user can only ever be referred once
+  referee          User      @relation("ReferralReferee", fields: [refereeId], references: [id])
+  code             String                          // referrer's code as used at signup
+  /** PENDING until the referee's first order is DELIVERED, then REWARDED. */
+  status           String    @default("PENDING")
+  rewardCouponCode String?                         // personal coupon minted for the referrer
+  createdAt        DateTime  @default(now())
+  rewardedAt       DateTime?
+  @@index([referrerId, status])
 }
 
 model StockAlert {                                  // back-in-stock waitlist ("notify me")
@@ -264,11 +405,16 @@ model Order {
   cancelledAt     DateTime?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
+  /** Dependent this order is for; null = the account holder themselves. */
+  patientId       String?
+  patient         Patient?      @relation(fields: [patientId], references: [id])
   items           OrderItem[]
   events          OrderEvent[]
   prescriptions   Prescription[]
   delivery        Delivery?
   payment         Payment?
+  rating          Rating?
+  returns         ReturnRequest[]
   @@index([status, createdAt])
   @@index([userId, createdAt])
 }
@@ -315,9 +461,19 @@ model OrderEvent {                                 // append-only audit trail
 }
 
 model Prescription {
+  /**
+   * Rx locker: a prescription belongs to a USER and may be re-used across
+   * orders, so `orderId` is nullable (null = sits in the locker, uploaded
+   * ahead of / independently of any order).
+   */
   id           String   @id @default(cuid())
-  orderId      String
-  order        Order    @relation(fields: [orderId], references: [id])
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  orderId      String?
+  order        Order?   @relation(fields: [orderId], references: [id])
+  patientId    String?
+  patient      Patient? @relation(fields: [patientId], references: [id])
+  label        String?                             // customer-facing name ("Dr Rao – Aug")
   fileKey      String                              // R2 private
   mimeType     String
   status       RxStatus @default(PENDING)
@@ -328,6 +484,7 @@ model Prescription {
   createdAt    DateTime @default(now())
   reviewedAt   DateTime?
   @@index([orderId])                              // FK lookup (Postgres does not auto-index FKs)
+  @@index([userId, createdAt])
 }
 
 model DriverProfile {
@@ -454,7 +611,14 @@ model Coupon {
   isActive     Boolean  @default(true)
   description  String?                              // customer-facing offer copy
   isPublic     Boolean  @default(false)             // listed on GET /v1/coupons (offers surface)
+  /**
+   * Personal coupon: redeemable ONLY by this user (referral reward, welcome
+   * offer). Null = a public/campaign coupon anyone may use.
+   */
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id])
   redemptions  CouponRedemption[]
+  @@index([userId])
 }
 model CouponRedemption {
   id       String @id @default(cuid())

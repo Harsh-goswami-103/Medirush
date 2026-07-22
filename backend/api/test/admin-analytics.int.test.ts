@@ -130,6 +130,7 @@ async function seedOrder(userId: string, o: SeedOrder) {
         ? {
             create: [
               {
+                user: { connect: { id: userId } },
                 fileKey: `rx/test/${n}.jpg`,
                 mimeType: "image/jpeg",
                 status: o.prescription.status,

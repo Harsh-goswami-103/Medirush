@@ -114,6 +114,8 @@ describe("order create", () => {
       couponCode: null,
       deliveryNote: null,
       contactless: false,
+      patientId: null,
+      patientName: null,
       requiresRx: false,
       rxStatus: "NA",
       deliveryOtp: null,

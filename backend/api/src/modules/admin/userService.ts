@@ -12,6 +12,7 @@ import {
 import { getPrisma } from "../../core/db";
 import { AppError } from "../../core/errors";
 import { isFirebaseConfigured } from "../../core/firebase";
+import { logger } from "../../core/logger";
 import { invalidateUserCache } from "../../plugins/auth";
 import type { AdminActor } from "./driverService";
 
@@ -242,35 +243,80 @@ export async function setUserRole(
  */
 const ANON_PREFIX = "anon:";
 
+/** `details.reason` on the repeat-call 409 — callers may treat it as a no-op. */
+export const ALREADY_ANONYMIZED = "ALREADY_ANONYMIZED";
+
+/** True for the 409 raised when the subject was already erased by an earlier call. */
+export function isAlreadyAnonymized(error: unknown): boolean {
+  return (
+    error instanceof AppError &&
+    error.statusCode === 409 &&
+    (error.details as { reason?: string } | undefined)?.reason === ALREADY_ANONYMIZED
+  );
+}
+
+export interface AnonymizeOptions {
+  /**
+   * Self-service erasure (DELETE /v1/me): the actor IS the subject, so the
+   * admin "not your own account" lockout guard is inverted.
+   */
+  selfService?: boolean;
+  /** AuditLog action; defaults to the admin-initiated `USER_ANONYMIZED`. */
+  auditAction?: string;
+  /** Extra audit meta merged into the row. MUST NOT carry pre-scrub PII. */
+  auditMeta?: Record<string, unknown>;
+}
+
 /**
- * POST /v1/admin/users/:id/anonymize — DPDP erasure honoring statutory retention
- * (docs/runbooks/data-erasure.md).
+ * Revoke the identity provider's refresh tokens so already-issued tokens die
+ * immediately. External call — MUST run outside the transaction; a no-op when
+ * Firebase is unconfigured (dev/test).
+ */
+async function revokeFirebaseSessions(firebaseUid: string): Promise<void> {
+  if (!isFirebaseConfigured()) return;
+  const { getAuth } = await import("firebase-admin/auth");
+  await getAuth().revokeRefreshTokens(firebaseUid);
+}
+
+/**
+ * DPDP erasure honoring statutory retention (docs/runbooks/data-erasure.md).
+ * Shared by POST /v1/admin/users/:id/anonymize and the self-service
+ * DELETE /v1/me — one implementation so the two can never diverge.
  *
  * One transaction: scrub User PII (name → "Deleted user", email → null,
- * phone/firebaseUid → `anon:<userId>`), delete addresses + device push tokens +
- * cart(+items) + notifications, set isBlocked=true (block semantics — live
- * sessions die at the auth plugin), write AuditLog USER_ANONYMIZED with counts.
+ * phone/firebaseUid → `anon:<userId>`, referralCode → null), delete the
+ * non-statutory personal satellites (addresses, device push tokens,
+ * cart(+items), notifications, stock alerts, wishlist, refill reminders,
+ * notification preferences, dependent patient profiles), null out free-text
+ * rating comments, set isBlocked=true
+ * (block semantics — live sessions die at the auth plugin), write the AuditLog
+ * row with counts. Sessions are then revoked at the identity provider.
  *
  * KEPT (statutory pharmacy/tax retention — never touched here): orders, order
- * items, payments, invoices, prescriptions + stored images, wallet/payout
- * records, audit logs.
+ * items, payments, invoices, prescriptions + stored images, return requests,
+ * wallet/payout records, audit logs.
  *
- * Guards: 404 unknown id · 409 self · 409 last active admin · 409 DRIVER role
- * (wallet/payout obligations — offboarding is a separate flow) · 409 any order
- * in a non-terminal state (in-flight fulfillment needs contact info) · repeat
- * call → 409 CONFLICT with `details.reason = "ALREADY_ANONYMIZED"` (idempotent-
- * safe: the first call did all the work; the tombstoned firebaseUid marks it).
+ * Guards: 404 unknown id · 409 self (admin path only) · 409 last active admin ·
+ * 409 DRIVER role (wallet/payout obligations — offboarding is a separate flow) ·
+ * 409 any order in a non-terminal state (in-flight fulfillment needs contact
+ * info) · repeat call → 409 CONFLICT with `details.reason = "ALREADY_ANONYMIZED"`
+ * (the first call did all the work; the tombstoned firebaseUid marks it).
  */
-export async function anonymizeUser(id: string, actor: AdminActor): Promise<AnonymizeUserResult> {
+export async function anonymizeUserAccount(
+  id: string,
+  actor: AdminActor,
+  options: AnonymizeOptions = {},
+): Promise<AnonymizeUserResult> {
   const prisma = getPrisma();
 
   // Lockout guard (mirrors blockUser): an admin cannot erase their own account.
-  if (id === actor.userId) {
+  if (!options.selfService && id === actor.userId) {
     throw new AppError("CONFLICT", "You cannot anonymize your own account", 409);
   }
 
   let firebaseUid = "";
   let deleted = { addresses: 0, deviceTokens: 0, cartItems: 0, notifications: 0 };
+  let purged = { stockAlerts: 0, wishlist: 0, refillReminders: 0, patients: 0, ratingComments: 0 };
 
   await prisma.$transaction(async (tx) => {
     // Lock ordering (AB-BA deadlock guard): the order-create tx locks the User
@@ -291,7 +337,7 @@ export async function anonymizeUser(id: string, actor: AdminActor): Promise<Anon
     // Repeat-call semantics: the tombstoned firebaseUid is the durable marker.
     if (user.firebaseUid.startsWith(ANON_PREFIX)) {
       throw new AppError("CONFLICT", "User is already anonymized", 409, {
-        reason: "ALREADY_ANONYMIZED",
+        reason: ALREADY_ANONYMIZED,
       });
     }
 
@@ -342,6 +388,28 @@ export async function anonymizeUser(id: string, actor: AdminActor): Promise<Anon
       notifications: notifications.count,
     };
 
+    // Batch-3 personal satellites — behavioural data and dependent-profile PII,
+    // none of it statutory. Patient rows carry names/DOB: the Schedule-H1 record
+    // lives on Prescription.patientName (kept), and Order/Prescription.patientId
+    // are ON DELETE SET NULL, so removing the profile leaves the register intact.
+    const stockAlerts = await tx.stockAlert.deleteMany({ where: { userId: id } });
+    const wishlist = await tx.wishlist.deleteMany({ where: { userId: id } });
+    const refillReminders = await tx.refillReminder.deleteMany({ where: { userId: id } });
+    await tx.notificationPreference.deleteMany({ where: { userId: id } });
+    const patients = await tx.patient.deleteMany({ where: { userId: id } });
+    // Stars stay (driver/service aggregates); the free-text comment may name people.
+    const ratingComments = await tx.rating.updateMany({
+      where: { userId: id, comment: { not: null } },
+      data: { comment: null },
+    });
+    purged = {
+      stockAlerts: stockAlerts.count,
+      wishlist: wishlist.count,
+      refillReminders: refillReminders.count,
+      patients: patients.count,
+      ratingComments: ratingComments.count,
+    };
+
     await tx.user.update({
       where: { id },
       data: {
@@ -349,6 +417,9 @@ export async function anonymizeUser(id: string, actor: AdminActor): Promise<Anon
         email: null,
         phone: `${ANON_PREFIX}${id}`,
         firebaseUid: `${ANON_PREFIX}${id}`,
+        // Retire the shareable code: an erased account must stop attracting new
+        // Referral/Coupon/Notification rows (referrals also reject blocked users).
+        referralCode: null,
         isBlocked: true,
       },
     });
@@ -356,16 +427,27 @@ export async function anonymizeUser(id: string, actor: AdminActor): Promise<Anon
     await tx.auditLog.create({
       data: {
         actorId: actor.userId,
-        action: "USER_ANONYMIZED",
+        action: options.auditAction ?? "USER_ANONYMIZED",
         entity: "User",
         entityId: id,
         // Counts + prior role only — no pre-scrub PII may survive in the trail.
-        meta: { role: user.role, deleted },
+        meta: { role: user.role, deleted, purged, ...(options.auditMeta ?? {}) },
       },
     });
   });
 
   // Bust the PRE-scrub uid so live sessions die now, not after the 60s TTL.
   invalidateUserCache(firebaseUid);
+  // External, post-commit: a provider outage must not undo a committed erasure.
+  try {
+    await revokeFirebaseSessions(firebaseUid);
+  } catch (error) {
+    logger.error({ err: error, userId: id }, "anonymize: revoking sessions failed");
+  }
   return { user: await loadAdminUser(id), deleted };
+}
+
+/** POST /v1/admin/users/:id/anonymize — admin-initiated DPDP erasure. */
+export async function anonymizeUser(id: string, actor: AdminActor): Promise<AnonymizeUserResult> {
+  return anonymizeUserAccount(id, actor);
 }

@@ -38,6 +38,7 @@ import { getStoreConfig } from "../../core/storeInfo";
 import { enqueueInvoicePdf } from "../../jobs/invoicePdf";
 import { acceptOffer, rejectOffer } from "../dispatch/service";
 import { notifyUser } from "../notifications/service";
+import { maybeRewardReferral } from "../referrals/service";
 import { assertTransition } from "../orders/stateMachine";
 import { creditWallet } from "../wallet/ledger";
 
@@ -356,6 +357,11 @@ export const driverRoutes: FastifyPluginAsync = async (app) => {
       await enqueueInvoicePdf(order.id).catch((err) =>
         logger.warn({ err, orderId: order.id }, "invoice enqueue failed (best-effort)"),
       );
+
+      // A referred customer's FIRST delivered order earns the referrer their
+      // reward coupon. Idempotent and never-throwing, like every post-commit
+      // hook here — a delivery must never fail because a perk didn't mint.
+      await maybeRewardReferral(order.userId);
 
       return {
         data: { deliveredAt: now.toISOString(), commissionPaise, walletBalancePaise },

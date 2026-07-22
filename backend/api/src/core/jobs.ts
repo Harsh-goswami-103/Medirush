@@ -11,6 +11,7 @@ import { registerNotificationFanout } from "../jobs/notificationFanout";
 import { registerDbBackup } from "../jobs/dbBackup";
 import { registerDriftAudit } from "../jobs/driftAudit";
 import { registerDataPrune } from "../jobs/prune";
+import { registerRefillReminder } from "../jobs/refillReminder";
 
 /**
  * pg-boss wiring: instance + lifecycle + Phase 1 cron registration.
@@ -96,8 +97,10 @@ export async function registerCronJobs(instance: PgBoss): Promise<void> {
   await registerDbBackup(instance);
   await registerDriftAudit(instance);
   await registerDataPrune(instance);
+  // Batch 3 worker: daily refill-reminder sweep.
+  await registerRefillReminder(instance);
   logger.info(
-    "payment-timeout + invoice-pdf + offer-expiry + notification-fanout + db-backup + drift-audit + data-prune workers registered",
+    "payment-timeout + invoice-pdf + offer-expiry + notification-fanout + db-backup + drift-audit + data-prune + refill-reminder workers registered",
   );
 }
 

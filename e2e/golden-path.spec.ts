@@ -36,7 +36,7 @@ test("customer places a COD order for a non-Rx product (golden path)", async ({
   await page.waitForURL("**/account");
 
   // Browse the seeded catalog and open the product.
-  await page.goto("/");
+  await page.goto("/shop");
   const productCard = page.getByRole("link", { name: new RegExp(PRODUCT.name, "i") });
   await expect(productCard).toBeVisible();
   await productCard.click();

@@ -103,6 +103,7 @@ export async function getOpsDetail(id: string): Promise<OpsOrderDetailWithMarker
     where: { id },
     include: {
       user: { select: { id: true, name: true, phone: true } },
+      patient: { select: { name: true } },
       items: { include: { allocations: true } },
       prescriptions: { orderBy: { createdAt: "asc" } },
       events: { orderBy: { createdAt: "asc" } },
@@ -211,6 +212,9 @@ export async function getOpsDetail(id: string): Promise<OpsOrderDetailWithMarker
     couponCode: order.couponCode,
     deliveryNote: order.deliveryNote,
     contactless: order.contactless,
+    // Who the order is for — pharmacists need this for the H1 register.
+    patientId: order.patientId,
+    patientName: order.patient?.name ?? null,
     requiresRx: order.requiresRx,
     rxStatus: order.rxStatus,
     cancelReason: order.cancelReason,

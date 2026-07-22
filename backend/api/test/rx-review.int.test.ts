@@ -84,7 +84,13 @@ async function makeReviewOrder(opts: ReviewOrderOpts = {}) {
     },
   });
   await prisma.prescription.create({
-    data: { orderId: order.id, fileKey: `rx/${order.id}/seed.png`, mimeType: "image/png", status: "PENDING" },
+    data: {
+      userId: order.userId,
+      orderId: order.id,
+      fileKey: `rx/${order.id}/seed.png`,
+      mimeType: "image/png",
+      status: "PENDING",
+    },
   });
   if (opts.withPaidPayment) {
     await prisma.payment.create({

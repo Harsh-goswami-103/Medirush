@@ -96,6 +96,9 @@ export const OrderSchema = z.object({
   deliveryNote: z.string().nullable(),
   /** Leave-at-door delivery — no handover. */
   contactless: z.boolean(),
+  /** Dependent this order is for; null = the account holder. */
+  patientId: IdSchema.nullable(),
+  patientName: z.string().nullable(),
   requiresRx: z.boolean(),
   rxStatus: RxStatusSchema,
   /**
@@ -205,6 +208,8 @@ export const CreateOrderBodySchema = z.object({
   deliveryNote: z.string().trim().min(1).max(200).optional(),
   /** Leave-at-door delivery. Defaults false. */
   contactless: z.boolean().optional(),
+  /** Dependent this order is for; must belong to the caller. */
+  patientId: IdSchema.optional(),
 });
 export type CreateOrderBody = z.infer<typeof CreateOrderBodySchema>;
 

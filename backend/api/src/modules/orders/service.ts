@@ -124,6 +124,9 @@ interface MappableOrder {
   couponCode: string | null;
   deliveryNote: string | null;
   contactless: boolean;
+  patientId: string | null;
+  /** Joined when the query includes `patient`; absent on lighter selects. */
+  patient?: { name: string } | null;
   requiresRx: boolean;
   rxStatus: RxStatus;
   deliveryOtp: string | null;
@@ -172,6 +175,8 @@ function baseOrder(order: MappableOrder, isOwner: boolean): Order {
     couponCode: order.couponCode,
     deliveryNote: order.deliveryNote,
     contactless: order.contactless,
+    patientId: order.patientId,
+    patientName: order.patient?.name ?? null,
     requiresRx: order.requiresRx,
     rxStatus: order.rxStatus,
     // Non-null only for the owning customer once READY (OTP is set at READY).
@@ -250,6 +255,7 @@ const detailInclude = {
   items: { orderBy: { id: "asc" } },
   events: { orderBy: { createdAt: "asc" } },
   prescriptions: { orderBy: { createdAt: "asc" } },
+  patient: { select: { name: true } },
   delivery: {
     include: { driver: { include: { user: { select: { name: true, phone: true } } } } },
   },
@@ -282,6 +288,8 @@ interface CheckoutContext {
   cart: { id: string };
   deliveryNote: string | null;
   contactless: boolean;
+  patientId: string | null;
+  patientName: string | null;
 }
 
 /**
@@ -306,6 +314,17 @@ async function prepareCheckout(userId: string, body: CreateOrderInput): Promise<
   const address = await prisma.address.findUnique({ where: { id: body.addressId } });
   if (!address || address.userId !== userId) {
     throw new AppError("NOT_FOUND", "Delivery address not found", 404);
+  }
+
+  // 2b) Optional dependent profile — must belong to the caller (404 rather
+  // than 403 so a stranger's profile id is indistinguishable from a typo).
+  let patient: { id: string; name: string } | null = null;
+  if (body.patientId !== undefined) {
+    const row = await prisma.patient.findUnique({ where: { id: body.patientId } });
+    if (!row || row.userId !== userId) {
+      throw new AppError("NOT_FOUND", "Patient profile not found", 404);
+    }
+    patient = { id: row.id, name: row.name };
   }
   const distanceM = haversineM(
     { lat: storeConfig.lat, lng: storeConfig.lng },
@@ -392,6 +411,8 @@ async function prepareCheckout(userId: string, body: CreateOrderInput): Promise<
     // Already trimmed + length-bounded by the contract; absent → null/false.
     deliveryNote: body.deliveryNote ?? null,
     contactless: body.contactless ?? false,
+    patientId: patient ? patient.id : null,
+    patientName: patient ? patient.name : null,
   };
 }
 
@@ -402,7 +423,7 @@ async function prepareCheckout(userId: string, body: CreateOrderInput): Promise<
 async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<CreateOrderResult> {
   const prisma = getPrisma();
   const { storeConfig, address, distanceM, lineItems, totals, requiresRx, couponRow, cart } = ctx;
-  const { deliveryNote, contactless } = ctx;
+  const { deliveryNote, contactless, patientId } = ctx;
 
   // 6) COD gates (§10.3) then velocity rule (§10.3). These pre-TX checks are a
   // fast-fail optimisation only — the authoritative re-check runs INSIDE the
@@ -477,6 +498,7 @@ async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<Cre
           couponCode: couponRow ? couponRow.code : null,
           deliveryNote,
           contactless,
+          patientId,
           requiresRx,
           rxStatus,
           placedAt: now,
@@ -576,7 +598,7 @@ async function createCodOrder(userId: string, ctx: CheckoutContext): Promise<Cre
 async function createPrepaidOrder(userId: string, ctx: CheckoutContext): Promise<CreateOrderResult> {
   const prisma = getPrisma();
   const { address, distanceM, lineItems, totals, requiresRx, couponRow, cart } = ctx;
-  const { deliveryNote, contactless } = ctx;
+  const { deliveryNote, contactless, patientId } = ctx;
 
   // Velocity rule (§10.3) — applies to every checkout, prepaid included. Fast
   // fail only; the authoritative re-check runs in-TX (assertFraudGatesInTx).
@@ -628,6 +650,7 @@ async function createPrepaidOrder(userId: string, ctx: CheckoutContext): Promise
           couponCode: couponRow ? couponRow.code : null,
           deliveryNote,
           contactless,
+          patientId,
           requiresRx,
           rxStatus: requiresRx ? RxStatus.PENDING : RxStatus.NA,
           // placedAt stays null until payment.captured promotes the order.
@@ -751,6 +774,8 @@ export interface CreateOrderInput {
   couponCode?: string;
   deliveryNote?: string;
   contactless?: boolean;
+  /** Dependent profile the order is for; validated against the caller. */
+  patientId?: string;
 }
 
 /* ------------------------------------------------------------- COD + fraud */
@@ -891,6 +916,12 @@ export async function validateCoupon(
   const prisma = getPrisma();
   const coupon = await prisma.coupon.findUnique({ where: { code } });
   if (!coupon || !coupon.isActive) {
+    throw new AppError("COUPON_INVALID", "This coupon is not valid", 422);
+  }
+  // Personal coupons (referral reward / welcome offer) are bound to one
+  // account. Same message as "not valid" so a code can't be probed for
+  // existence by a stranger.
+  if (coupon.userId !== null && coupon.userId !== userId) {
     throw new AppError("COUPON_INVALID", "This coupon is not valid", 422);
   }
   const now = new Date();
@@ -1221,7 +1252,7 @@ export async function cancelOrder(
 async function loadOrder(id: string, viewerUserId: string): Promise<Order> {
   const order = await getPrisma().order.findUniqueOrThrow({
     where: { id },
-    include: { items: { orderBy: { id: "asc" } } },
+    include: { items: { orderBy: { id: "asc" } }, patient: { select: { name: true } } },
   });
   return baseOrder(order, order.userId === viewerUserId);
 }
@@ -1229,14 +1260,17 @@ async function loadOrder(id: string, viewerUserId: string): Promise<Order> {
 /* -------------------------------------------------------------- restock */
 
 /**
- * Reverse an order's stock reservation inside the caller's transaction
+ * Reverse an order's reservations inside the caller's transaction
  * (pinned cross-agent signature — agent D's ops cancel consumes this):
  * - add each item's qty back to `Product.stockQty` + a CANCEL_RESTOCK adjustment;
  * - when the order was already allocated (READY+ cancels), restore the
- *   `Batch.qtyAvailable` decremented at packing from the ItemBatchAlloc rows.
+ *   `Batch.qtyAvailable` decremented at packing from the ItemBatchAlloc rows;
+ * - release the coupon the order reserved when it was never paid for.
  * Status flip + OrderEvent are the CALLER's responsibility (§18.3).
  */
 export async function restockOrder(tx: Prisma.TransactionClient, orderId: string): Promise<void> {
+  await releaseUnpaidCouponRedemption(tx, orderId);
+
   const items = await tx.orderItem.findMany({
     where: { orderId },
     include: { allocations: true },
@@ -1261,4 +1295,28 @@ export async function restockOrder(tx: Prisma.TransactionClient, orderId: string
       `;
     }
   }
+}
+
+/**
+ * Give a cancelled-before-payment order's coupon back to the customer. A
+ * CouponRedemption is written at create, so an abandoned PREPAID checkout
+ * (payment timeout, payment.failed, customer cancel) would otherwise burn a
+ * single-use referral/welcome coupon for good.
+ *
+ * `placedAt` is the paid-for marker: it is stamped at create for COD and only
+ * by `payment.captured` for PREPAID, so a null value means the order never
+ * left PENDING_PAYMENT and no money was ever taken. Cancelling an order that
+ * WAS paid for keeps its redemption — the customer is refunded instead.
+ *
+ * Runs inside the caller's cancellation transaction, so the release can never
+ * half-apply. `deleteMany` on the unique `orderId` is a no-op when the order
+ * carried no coupon.
+ */
+async function releaseUnpaidCouponRedemption(
+  tx: Prisma.TransactionClient,
+  orderId: string,
+): Promise<void> {
+  const order = await tx.order.findUnique({ where: { id: orderId }, select: { placedAt: true } });
+  if (!order || order.placedAt !== null) return;
+  await tx.couponRedemption.deleteMany({ where: { orderId } });
 }

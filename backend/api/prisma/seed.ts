@@ -55,6 +55,19 @@ interface SeedProduct {
   maxPerOrder?: number;
 }
 
+/**
+ * Health concerns power the "shop by concern" browse. `products` lists the
+ * product slugs tagged with each concern.
+ */
+const HEALTH_CONCERNS = [
+  { slug: "fever-pain", name: "Fever & Pain", sortOrder: 1, products: ["dolo-650-tablet", "crocin-advance-500-tablet", "volini-pain-relief-gel-75g"] },
+  { slug: "cold-cough", name: "Cold & Cough", sortOrder: 2, products: ["vicks-vaporub-50ml"] },
+  { slug: "digestive-care", name: "Digestive Care", sortOrder: 3, products: ["electral-powder-sachet"] },
+  { slug: "bone-joint", name: "Bone & Joint", sortOrder: 4, products: ["shelcal-500-tablet", "volini-pain-relief-gel-75g"] },
+  { slug: "daily-wellness", name: "Daily Wellness", sortOrder: 5, products: ["zincovit-tablet", "revital-h-men-30-capsules"] },
+  { slug: "heart-bp", name: "Heart & BP", sortOrder: 6, products: ["telma-40-tablet"] },
+] as const;
+
 const PRODUCTS: SeedProduct[] = [
   {
     slug: "dolo-650-tablet",
@@ -364,6 +377,9 @@ async function main(): Promise<void> {
   // 1 ── wipe volatile rows (FK-safe order) so re-seeding never crashes ─────
   await prisma.walletTxn.deleteMany();
   await prisma.itemBatchAlloc.deleteMany();
+  // Post-delivery rows also FK to Order — they must go before the orders do.
+  await prisma.rating.deleteMany();
+  await prisma.returnRequest.deleteMany();
   await prisma.orderEvent.deleteMany();
   await prisma.delivery.deleteMany();
   await prisma.deliveryOffer.deleteMany();
@@ -491,6 +507,24 @@ async function main(): Promise<void> {
       update: data,
     });
     productIdBySlug.set(p.slug, row.id);
+  }
+
+  // 5b ── health concerns + their product tags (shop-by-concern browse) ──────
+  for (const c of HEALTH_CONCERNS) {
+    const concern = await prisma.healthConcern.upsert({
+      where: { slug: c.slug },
+      create: { slug: c.slug, name: c.name, sortOrder: c.sortOrder, isActive: true },
+      update: { name: c.name, sortOrder: c.sortOrder, isActive: true },
+    });
+    for (const productSlug of c.products) {
+      const productId = productIdBySlug.get(productSlug);
+      if (!productId) throw new Error(`Seed bug: unknown product ${productSlug} in ${c.slug}`);
+      await prisma.productHealthConcern.upsert({
+        where: { productId_concernId: { productId, concernId: concern.id } },
+        create: { productId, concernId: concern.id },
+        update: {},
+      });
+    }
   }
 
   // 6 ── batches (3 per product, staggered future expiries) + RECEIVED adj ──

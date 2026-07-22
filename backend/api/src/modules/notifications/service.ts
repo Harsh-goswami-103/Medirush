@@ -14,18 +14,70 @@ import { enqueuePush } from "../../jobs/notificationFanout";
  * ownership is enforced in the query `where`, so cross-user access is impossible.
  */
 
+/** Consent bucket a notification falls into (NotificationPreference columns). */
+export type NotificationCategory = "order" | "promo" | "refill";
+
+const PREFERENCE_FIELD = {
+  order: "orderUpdates",
+  promo: "promotions",
+  refill: "refillReminders",
+} as const;
+
 export interface NotifyUserInput {
   userId: string;
   type: string;
   title: string;
   body: string;
   data?: Record<string, unknown>;
+  /** Consent bucket checked before pushing; defaults to transactional "order". */
+  category?: NotificationCategory;
+}
+
+/**
+ * Notification types that ALWAYS push, whatever `orderUpdates` says. A customer
+ * cannot opt out of safety- and money-critical notices about a live order: an
+ * Rx rejection (the medicine is NOT coming), a cancellation, a refund, the
+ * courier arriving/handing over, and the handover OTP. Everything else —
+ * ORDER_PLACED, ORDER_READY, ORDER_RX_APPROVED, driver-side assignment chatter,
+ * payouts — honours the toggle, as do the promo/refill buckets.
+ */
+const ALWAYS_PUSH_TYPES: ReadonlySet<string> = new Set([
+  "ORDER_RX_REJECTED",
+  "ORDER_CANCELLED",
+  "ORDER_REFUNDED",
+  "ORDER_PICKED_UP",
+  "ORDER_DELIVERED",
+  "ORDER_OTP",
+]);
+
+/**
+ * Whether a push may be sent. Delivery-critical types bypass consent entirely
+ * (see ALWAYS_PUSH_TYPES); otherwise the category's own toggle decides. A
+ * missing preference row means the user has never opted out ⇒ all-true. Single
+ * indexed lookup on the unique userId.
+ */
+async function pushAllowed(
+  userId: string,
+  category: NotificationCategory,
+  type: string,
+): Promise<boolean> {
+  if (category === "order" && ALWAYS_PUSH_TYPES.has(type)) return true;
+  const row = await getPrisma().notificationPreference.findUnique({
+    where: { userId },
+    select: { orderUpdates: true, promotions: true, refillReminders: true },
+  });
+  return row === null ? true : row[PREFERENCE_FIELD[category]];
 }
 
 /**
  * Persist a Notification for a user and enqueue its push. Best-effort end to
  * end: any failure (write or enqueue) is logged and swallowed so a post-commit
  * caller is never disrupted.
+ *
+ * Consent (DPDP/TRAI) gates the PUSH only — the in-app row is always written so
+ * notification history stays complete even for an opted-out category. Callers
+ * MUST pass `category` for marketing ("promo") and refill ("refill") sends;
+ * omitting it means transactional "order".
  */
 export async function notifyUser(input: NotifyUserInput): Promise<void> {
   try {
@@ -41,12 +93,14 @@ export async function notifyUser(input: NotifyUserInput): Promise<void> {
       },
     });
 
-    await enqueuePush({
-      userId: input.userId,
-      title: input.title,
-      body: input.body,
-      data: input.data,
-    });
+    if (await pushAllowed(input.userId, input.category ?? "order", input.type)) {
+      await enqueuePush({
+        userId: input.userId,
+        title: input.title,
+        body: input.body,
+        data: input.data,
+      });
+    }
   } catch (error) {
     // Notifications are a side-channel to the committed transition — log, never throw.
     logger.error({ err: error, userId: input.userId, type: input.type }, "notifyUser failed");

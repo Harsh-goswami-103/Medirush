@@ -4,6 +4,7 @@ import {
   ApiErrorSchema,
   GetProductResponseSchema,
   ListCategoriesResponseSchema,
+  ListHealthConcernsResponseSchema,
   ListSubstitutesResponseSchema,
   ProductListQuerySchema,
   ProductListResponseSchema,
@@ -18,7 +19,8 @@ import { listSubstitutes, searchProducts, toImageUrl, toProductDetail } from "./
 /**
  * Catalog endpoints (§7.2 ⭘ rows + Batch 2):
  * - GET /v1/categories
- * - GET /v1/products?category&search&cursor&limit&sort&filters…
+ * - GET /v1/concerns
+ * - GET /v1/products?category&concern&search&cursor&limit&sort&filters…
  * - GET /v1/products/:slug
  * - GET /v1/products/:slug/substitutes
  * - POST/GET/DELETE /v1/products/:slug/stock-alert (CUSTOMER)
@@ -86,6 +88,34 @@ export const catalogRoutes: FastifyPluginAsync = async (app) => {
   );
 
   typed.get(
+    "/concerns",
+    {
+      config: { public: true },
+      schema: {
+        tags: ["catalog"],
+        summary: "Active health concerns (shop-by-concern browse), sorted by sortOrder",
+        response: { 200: ListHealthConcernsResponseSchema },
+      },
+    },
+    async (_request, reply) => {
+      const concerns = await getPrisma().healthConcern.findMany({
+        where: { isActive: true },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      });
+      reply.header("cache-control", PUBLIC_CACHE_CONTROL);
+      return {
+        data: concerns.map((concern) => ({
+          id: concern.id,
+          name: concern.name,
+          slug: concern.slug,
+          imageUrl: concern.imageUrl === null ? null : toImageUrl(concern.imageUrl),
+          sortOrder: concern.sortOrder,
+        })),
+      };
+    },
+  );
+
+  typed.get(
     "/products",
     {
       config: { public: true },
@@ -97,20 +127,33 @@ export const catalogRoutes: FastifyPluginAsync = async (app) => {
       },
     },
     async (request, reply) => {
-      const { category, search, cursor, limit } = request.query;
+      const { category, concern, search, cursor, limit } = request.query;
       const { sort, inStock, requiresRx, minPricePaise, maxPricePaise, discounted } = request.query;
+
+      const emptyPage = () => {
+        reply.header("cache-control", PUBLIC_CACHE_CONTROL);
+        return { data: [], meta: { nextCursor: null } };
+      };
 
       let categoryId: string | undefined;
       if (category !== undefined) {
         const categoryRow = await getPrisma().category.findUnique({
           where: { slug: category },
         });
-        if (categoryRow === null) {
-          // Unknown category slug → empty page (filter semantics, not a 404).
-          reply.header("cache-control", PUBLIC_CACHE_CONTROL);
-          return { data: [], meta: { nextCursor: null } };
-        }
+        // Unknown category slug → empty page (filter semantics, not a 404).
+        if (categoryRow === null) return emptyPage();
         categoryId = categoryRow.id;
+      }
+
+      let concernId: string | undefined;
+      if (concern !== undefined) {
+        const concernRow = await getPrisma().healthConcern.findFirst({
+          where: { slug: concern, isActive: true },
+          select: { id: true },
+        });
+        // Same filter semantics as category; an inactive concern reads as unknown.
+        if (concernRow === null) return emptyPage();
+        concernId = concernRow.id;
       }
 
       const { items, nextCursor } = await searchProducts(search, categoryId, cursor, limit, {
@@ -120,6 +163,7 @@ export const catalogRoutes: FastifyPluginAsync = async (app) => {
         minPricePaise,
         maxPricePaise,
         discounted,
+        concernId,
       });
       reply.header("cache-control", PUBLIC_CACHE_CONTROL);
       return { data: items, meta: { nextCursor } };
