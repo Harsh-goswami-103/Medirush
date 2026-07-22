@@ -7,7 +7,19 @@ import * as Sentry from "@sentry/nextjs";
  */
 export function register() {
   const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
-  if (!dsn) return;
+  if (!dsn) {
+    // Silent in dev (no DSN there is normal); loud in production, where an
+    // unreported deploy is indistinguishable from a healthy one. No pino here,
+    // so console.warn — it lands in the platform's server logs.
+    if (process.env.NODE_ENV === "production") {
+      console.warn(
+        "sentry disabled — NEXT_PUBLIC_SENTRY_DSN is not set in this production build, " +
+          "so server/edge errors will not be reported. Fix: set NEXT_PUBLIC_SENTRY_DSN " +
+          "at build time and redeploy.",
+      );
+    }
+    return;
+  }
   Sentry.init({
     dsn,
     environment: process.env.NODE_ENV,
