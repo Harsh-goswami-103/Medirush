@@ -38,7 +38,10 @@ const IST_DATE = new Intl.DateTimeFormat("en-CA", {
 });
 
 function istTomorrow(): string {
-  return IST_DATE.format(new Date(Date.now() + 86_400_000));
+  // Two days ahead remains future-dated even if the request crosses IST midnight.
+  const parts = IST_DATE.formatToParts(new Date(Date.now() + 2 * 86_400_000));
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 const { authHeaders } = await import("./helpers/auth");
