@@ -46,7 +46,9 @@ const PLANNER_OPTS = [
   "-c enable_indexonlyscan=off",
 ].join(" ");
 const BASE_URL = process.env.DATABASE_URL ?? "postgresql://postgres@localhost:5433/medrush_test";
-process.env.DATABASE_URL = `${BASE_URL.split("?")[0]}?options=${encodeURIComponent(PLANNER_OPTS)}`;
+const databaseUrl = new URL(BASE_URL);
+databaseUrl.searchParams.set("options", PLANNER_OPTS);
+process.env.DATABASE_URL = databaseUrl.toString();
 
 delete process.env.FIREBASE_PROJECT_ID;
 
