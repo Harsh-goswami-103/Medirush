@@ -171,7 +171,7 @@ export function setup() {
 
   // 50 is the server-side max for `limit` (CursorQuerySchema).
   const products = http.get(`${BASE_URL}/v1/products?limit=50`, { headers: headers(setupToken) });
-  check(products, { "catalog 200": (r) => r.status === 200 });
+  if (products.status !== 200) fail(`GET /v1/products returned ${products.status} (is the API up?)`);
   const basket = pickBasket(
     products.json("data") || [],
     minOrderPaise,
