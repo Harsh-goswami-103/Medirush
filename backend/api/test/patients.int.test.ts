@@ -18,6 +18,20 @@ const { clearAuthCaches } = await import("../src/plugins/auth");
 const { patientRoutes } = await import("../src/modules/patients/routes");
 const { setupTestDb } = await import("./helpers/db");
 const { appSettings, storeConfig, user } = await import("./helpers/factories");
+
+/** Future DOB fixtures must use the same Asia/Kolkata calendar as validation. */
+const IST_DATE = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Kolkata",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+function istTomorrow(): string {
+  const parts = IST_DATE.formatToParts(new Date(Date.now() + 2 * 86_400_000));
+  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
 const { authHeaders } = await import("./helpers/auth");
 
 type App = Awaited<ReturnType<typeof buildApp>>;
@@ -130,7 +144,7 @@ describe("POST /v1/patients", () => {
 
   it("rejects a future dob with 422 VALIDATION_ERROR", async () => {
     const { headers } = await customer();
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    const tomorrow = istTomorrow();
 
     const res = await createPatient(headers, { name: "Future", relation: "OTHER", dob: tomorrow });
     expect(res.statusCode, res.body).toBe(422);
@@ -256,7 +270,7 @@ describe("PATCH /v1/patients/:id", () => {
   it("rejects a future dob with 422 and leaves the row untouched", async () => {
     const { headers } = await customer();
     const created = await seedPatient(headers, { name: "Asha", relation: "PARENT" });
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    const tomorrow = istTomorrow();
 
     const res = await app.inject({
       method: "PATCH",

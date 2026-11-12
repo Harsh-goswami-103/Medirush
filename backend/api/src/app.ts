@@ -104,8 +104,10 @@ export async function buildApp() {
 
   await app.register(rateLimit, {
     global: true,
-    max: 100,
-    timeWindow: 60_000, // 100 req/min per client
+    // Defaults to 100/min — see RATE_LIMIT_MAX in core/config.ts. The override
+    // exists for the load-test job, where every VU shares one source IP.
+    max: config.RATE_LIMIT_MAX,
+    timeWindow: 60_000,
     // Per-route configs (auth sync 20/min, webhook exempt) inherit this key.
     keyGenerator: (request) => rateLimitKeyFor(request, config.RATE_LIMIT_TRUST_CF_HEADER),
   });
