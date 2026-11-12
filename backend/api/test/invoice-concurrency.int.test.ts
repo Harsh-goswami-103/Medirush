@@ -34,6 +34,28 @@ async function mintConcurrently(n: number, now: Date): Promise<string[]> {
   );
 }
 
+/**
+ * Hold the BEFORE INSERT trigger on InvoiceCounter until every contender is
+ * waiting on the same transaction-scoped advisory lock. This proves both
+ * transactions reached the fresh-row insert before either can commit.
+ */
+async function waitForInvoiceCounterInsertWaiters(expected: number): Promise<void> {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const rows = await prisma.$queryRaw<Array<{ waiting: number }>>`
+      SELECT COUNT(*)::int AS waiting
+      FROM pg_locks
+      WHERE locktype = 'advisory'
+        AND classid = 2147::oid
+        AND objid = 733::oid
+        AND objsubid = 2
+        AND granted = false
+    `;
+    if (Number(rows[0]?.waiting ?? 0) >= expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${expected} invoice-counter insert contenders`);
+}
+
 describe("nextInvoiceNo — concurrent minting", () => {
   beforeEach(async () => {
     await setupTestDb();
@@ -44,15 +66,73 @@ describe("nextInvoiceNo — concurrent minting", () => {
   });
 
   it("two simultaneous minters on a FRESH FY never collide", async () => {
-    // Both transactions race the ON CONFLICT DO NOTHING seed: the counter row
-    // does not exist yet, so this is the case the sequential test cannot reach.
     const now = new Date("2025-06-15T09:00:00Z");
-    const numbers = await mintConcurrently(2, now);
 
-    expect(new Set(numbers).size).toBe(2);
-    for (const no of numbers) expect(no).toMatch(/^MR\/25-26\/\d{6}$/);
-    // Exactly two numbers were taken, so the counter advanced once per minter.
-    expect(numbers.map((no) => no.slice(-6)).sort()).toEqual(["000001", "000002"]);
+    // The test-only trigger makes both INSERT statements wait at the same
+    // advisory lock. We release it only after pg_locks confirms two waiters,
+    // so pool scheduling cannot accidentally serialize the seed operation.
+    await prisma.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS "test_invoice_counter_insert_barrier" ON "InvoiceCounter"`,
+    );
+    await prisma.$executeRawUnsafe(
+      `DROP FUNCTION IF EXISTS "test_invoice_counter_insert_barrier"()`,
+    );
+    await prisma.$executeRawUnsafe(`
+      CREATE FUNCTION "test_invoice_counter_insert_barrier"()
+      RETURNS trigger AS $$
+      BEGIN
+        PERFORM pg_advisory_xact_lock(2147, 733);
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER "test_invoice_counter_insert_barrier"
+      BEFORE INSERT ON "InvoiceCounter"
+      FOR EACH ROW EXECUTE FUNCTION "test_invoice_counter_insert_barrier"()
+    `);
+
+    let releaseGate!: () => void;
+    let signalGateReady!: () => void;
+    const gateReady = new Promise<void>((resolve) => {
+      signalGateReady = resolve;
+    });
+    const holdGate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    const gate = prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(2147, 733)`;
+      signalGateReady();
+      await holdGate;
+    });
+
+    await gateReady;
+    const minting = mintConcurrently(2, now);
+    let barrierError: unknown;
+    try {
+      await waitForInvoiceCounterInsertWaiters(2);
+    } catch (error) {
+      barrierError = error;
+    } finally {
+      releaseGate();
+    }
+
+    try {
+      await gate;
+      const numbers = await minting;
+      expect(new Set(numbers).size).toBe(2);
+      for (const no of numbers) expect(no).toMatch(/^MR\/25-26\/\d{6}$/);
+      expect(numbers.map((no) => no.slice(-6)).sort()).toEqual(["000001", "000002"]);
+    } finally {
+      await prisma.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS "test_invoice_counter_insert_barrier" ON "InvoiceCounter"`,
+      );
+      await prisma.$executeRawUnsafe(
+        `DROP FUNCTION IF EXISTS "test_invoice_counter_insert_barrier"()`,
+      );
+    }
+
+    if (barrierError) throw barrierError;
   });
 
   it("many simultaneous minters produce a dense, gap-free, duplicate-free run", async () => {
