@@ -58,6 +58,7 @@ export function LiveTrackingDot() {
   return (
     <View
       style={styles.dotRow}
+      accessible={true}
       accessibilityRole="text"
       accessibilityLabel={connected ? "Live tracking connected" : "Live tracking offline"}
     >
