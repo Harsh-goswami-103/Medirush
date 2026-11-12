@@ -5,6 +5,7 @@ import type { DeliverResult } from "@medrush/contracts";
 import { ApiError } from "@/lib/api";
 import { useActiveDelivery, useDeliver, usePickedUp } from "@/lib/queries";
 import { Badge, Button, Card, Divider, EmptyState, Field, Loading, Row, Txt } from "@/components/ui";
+import { LiveTrackingBanner, LiveTrackingDot } from "@/components/LiveTrackingBanner";
 import { colors, font, radius, space } from "@/lib/theme";
 import { callNumber, distance, navigateTo, rupees, rupeesWhole } from "@/lib/format";
 
@@ -94,8 +95,19 @@ export default function ActiveScreen() {
         <Txt size={font.xl} weight="800">
           Order #{active.orderNo}
         </Txt>
-        <Badge label={assigned ? "Assigned" : "Picked up"} tone={assigned ? "info" : "success"} />
+        <Row gap={space.sm}>
+          <Badge label={assigned ? "Assigned" : "Picked up"} tone={assigned ? "info" : "success"} />
+          <LiveTrackingDot />
+        </Row>
       </Row>
+
+      {/*
+        Degraded-tracking warning. Renders null while tracking is healthy, so in the
+        normal case the layout is exactly as before; when it does appear it sits above
+        the fold, directly under the header, because a driver who keeps walking with a
+        dead socket is the failure mode issue #16 could not otherwise surface.
+      */}
+      <LiveTrackingBanner />
 
       {/* pickup */}
       <Card style={{ gap: space.sm }}>
