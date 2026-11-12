@@ -103,7 +103,7 @@ describe("nextInvoiceNo — concurrent minting", () => {
       releaseGate = resolve;
     });
     const gate = prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(2147, 733)`;
+      await tx.$queryRaw`SELECT 1 AS acquired FROM (SELECT pg_advisory_xact_lock(2147, 733)) AS lock_gate`;
       signalGateReady();
       await holdGate;
     });
