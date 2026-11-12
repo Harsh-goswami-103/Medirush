@@ -340,7 +340,18 @@ async function prepareCheckout(userId: string, body: CreateOrderInput): Promise<
   }
 
   // 3) Cart non-empty; each item active, qty ≤ maxPerOrder (§9.2).
-  const cart = await prisma.cart.findUnique({ where: { userId }, include: { items: true } });
+  // `orderBy` is load-bearing, not cosmetic: this order flows into the §9.4
+  // reservation loop, which takes a Product row lock per line. Without it
+  // Postgres answers from whatever plan it picks — an index scan on
+  // @@unique([cartId, productId]) happens to come back productId-ascending,
+  // but a seq scan (which it chooses once the table is big enough) returns
+  // heap/insert order. Two customers who added the same two products in
+  // opposite orders then lock them A→B and B→A and deadlock (40P01 → 500).
+  // Sorting here makes the lock order canonical for every checkout.
+  const cart = await prisma.cart.findUnique({
+    where: { userId },
+    include: { items: { orderBy: { productId: "asc" } } },
+  });
   if (!cart || cart.items.length === 0) {
     throw new AppError("VALIDATION_ERROR", "Your cart is empty", 422);
   }
@@ -750,7 +761,12 @@ async function reserveStockOrThrow(
   lineItems: { product: Product; qty: number }[],
 ): Promise<void> {
   const shortages: { productId: string; requestedQty: number }[] = [];
-  for (const li of lineItems) {
+  // Lock discipline, enforced at the point the locks are actually taken so no
+  // caller can bypass it by building `lineItems` in its own order: always walk
+  // products in one canonical direction. Concurrent checkouts holding an
+  // overlapping set then queue behind each other instead of deadlocking AB-BA.
+  const ordered = [...lineItems].sort((x, y) => (x.product.id < y.product.id ? -1 : 1));
+  for (const li of ordered) {
     const affected = await tx.$executeRaw`
       UPDATE "Product" SET "stockQty" = "stockQty" - ${li.qty}
       WHERE "id" = ${li.product.id} AND "stockQty" >= ${li.qty}
