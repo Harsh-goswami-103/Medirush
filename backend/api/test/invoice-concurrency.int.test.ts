@@ -66,7 +66,7 @@ describe("nextInvoiceNo — concurrent minting", () => {
   });
 
   it("two simultaneous minters on a FRESH FY never collide", async () => {
-    const now = new Date("2025-06-15T09:00:00Z");
+    const now = new Date("2098-06-15T09:00:00Z");
 
     // The test-only trigger makes both INSERT statements wait at the same
     // advisory lock. We release it only after pg_locks confirms two waiters,
@@ -89,7 +89,9 @@ describe("nextInvoiceNo — concurrent minting", () => {
     await prisma.$executeRawUnsafe(`
       CREATE TRIGGER "test_invoice_counter_insert_barrier"
       BEFORE INSERT ON "InvoiceCounter"
-      FOR EACH ROW EXECUTE FUNCTION "test_invoice_counter_insert_barrier"()
+      FOR EACH ROW
+      WHEN (NEW."fy" = '98-99')
+      EXECUTE FUNCTION "test_invoice_counter_insert_barrier"()
     `);
 
     let releaseGate!: () => void;
@@ -121,7 +123,7 @@ describe("nextInvoiceNo — concurrent minting", () => {
       await gate;
       const numbers = await minting;
       expect(new Set(numbers).size).toBe(2);
-      for (const no of numbers) expect(no).toMatch(/^MR\/25-26\/\d{6}$/);
+      for (const no of numbers) expect(no).toMatch(/^MR\/98-99\/\d{6}$/);
       expect(numbers.map((no) => no.slice(-6)).sort()).toEqual(["000001", "000002"]);
     } finally {
       await prisma.$executeRawUnsafe(
