@@ -18,7 +18,16 @@ let enabled = false;
 
 export function initSentry(): void {
   const config = getConfig();
-  if (!config.SENTRY_DSN) return;
+  if (!config.SENTRY_DSN) {
+    // Production is already covered upstream: SENTRY_DSN is in PROD_REQUIRED_KEYS
+    // (core/config.ts), so a production process without it throws at config load
+    // and never reaches this line. There is deliberately no production branch
+    // here — one would be unreachable, and unreachable "safety" code reads as a
+    // guarantee it cannot provide. Outside production a missing DSN is normal, so
+    // this is debug rather than warn.
+    logger.debug("sentry disabled — SENTRY_DSN not set (expected outside production)");
+    return;
+  }
   Sentry.init({
     dsn: config.SENTRY_DSN,
     environment: config.NODE_ENV,

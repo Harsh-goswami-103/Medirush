@@ -18,7 +18,19 @@ export const navigationIntegration = Sentry.reactNavigationIntegration({
 
 /** Initialise Sentry — no-op unless a DSN is configured. */
 export function initSentry(): void {
-  if (!SENTRY_DSN) return;
+  if (!SENTRY_DSN) {
+    // The driver app is the surface where silence hurts most: a release build
+    // reports nothing and there is no server log to notice it from. `__DEV__` is
+    // compile-time, so this warning is stripped from dev bundles entirely and
+    // only ships in a release build that was assembled without the DSN.
+    if (!__DEV__) {
+      console.warn(
+        "[sentry] disabled — EXPO_PUBLIC_SENTRY_DSN was not set at build time, so " +
+          "no crash from this release build will be reported. Rebuild with the DSN set.",
+      );
+    }
+    return;
+  }
   Sentry.init({
     dsn: SENTRY_DSN,
     environment: __DEV__ ? "development" : "production",
