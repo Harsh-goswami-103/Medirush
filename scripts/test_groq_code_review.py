@@ -11,6 +11,8 @@ class CodeReviewFileSelectionTests(unittest.TestCase):
         for path in (
             ".env",
             ".env.example",
+            ".envrc",
+            "config/production.env",
             "secrets/production.json",
             "config/service-account.json",
             "certs/server.pem",
@@ -32,6 +34,8 @@ class CodeReviewFileSelectionTests(unittest.TestCase):
                 "src/app.ts": "export const safe = true;",
                 ".env.production": "API_KEY=DO_NOT_SEND",
                 ".env.example": "DATABASE_URL=DO_NOT_SEND",
+                ".envrc": "export TOKEN=DO_NOT_SEND",
+                "config/production.env": "TOKEN=DO_NOT_SEND",
                 "secrets/production.json": '{"token":"DO_NOT_SEND"}',
                 "certs/server.pem": "PRIVATE KEY DO_NOT_SEND",
                 ".npmrc": "//registry.npmjs.org/:_authToken=DO_NOT_SEND",
