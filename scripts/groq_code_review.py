@@ -118,7 +118,7 @@ def collect_batches(root="."):
         text=True,
         encoding="utf-8",
         check=True,
-    ).stdout.split("\\0")
+    ).stdout.split("\0")
 
     batches = []
     current = []
@@ -161,7 +161,7 @@ def collect_batches(root="."):
         if len(text) > MAX_FILE_CHARS:
             text = text[:MAX_FILE_CHARS]
 
-        entry = f"\\n--- FILE: {relative.as_posix()} ---\\n{text}\\n"
+        entry = f"\n--- FILE: {relative.as_posix()} ---\n{text}\n"
         if current_size + len(entry) > MAX_BATCH_CHARS:
             if current:
                 batches.append("".join(current))
