@@ -4,9 +4,7 @@ import re
 import subprocess
 from pathlib import Path
 
-import requests
 
-GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -40,6 +38,21 @@ SKIP_EXT = {
     ".mp4",
     ".mp3",
 }
+# Never send credential-bearing configuration or private key material to the
+# external review provider. The review input is limited to tracked source/docs.
+SENSITIVE_DIRS = {".aws", ".ssh", ".gnupg", ".azure", ".gcloud", ".kube", ".docker"}
+SENSITIVE_NAMES = {
+    ".npmrc", ".pypirc", ".netrc", ".git-credentials",
+    "credentials.json", "service-account.json", "id_rsa", "id_ed25519",
+    "known_hosts",
+}
+SENSITIVE_SUFFIXES = {
+    ".pem", ".key", ".p12", ".pfx", ".p7b", ".p7c", ".p8", ".der",
+    ".crt", ".cer", ".jks", ".keystore", ".tfstate", ".tfvars",
+    ".kdbx", ".ovpn", ".mobileprovision", ".sqlite", ".db",
+}
+SENSITIVE_NAME_MARKERS = ("secret", "credential", "service-account", "firebase-adminsdk")
+
 
 # Safe limits
 MAX_BATCH_CHARS = 25000
@@ -79,41 +92,79 @@ Return [] if nothing significant is found.
 """
 
 
-def collect_batches(root="."):
-    batches = []
+def is_sensitive_path(path):
+    """Return True for paths that may contain credentials or private material."""
+    path = Path(path)
+    name = path.name.lower()
+    parts = [part.lower() for part in path.parts]
 
+    if any(part in SENSITIVE_DIRS for part in parts):
+        return True
+    if name in {".env", ".envrc"} or name.startswith(".env.") or name.endswith(".env"):
+        return True
+    if name in SENSITIVE_NAMES:
+        return True
+    if any(marker in part for marker in SENSITIVE_NAME_MARKERS for part in parts):
+        return True
+    return any(name.endswith(suffix) for suffix in SENSITIVE_SUFFIXES)
+
+
+def collect_batches(root="."):
+    """Collect bounded review batches from tracked, non-sensitive regular files."""
+    root_path = Path(root).resolve()
+    tracked = subprocess.run(
+        ["git", "-C", str(root_path), "ls-files", "-z"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.split("\0")
+
+    batches = []
     current = []
     current_size = 0
 
-    for path in sorted(Path(root).rglob("*")):
-
-        if not path.is_file():
+    for relative in sorted(Path(item) for item in tracked if item):
+        if relative.is_absolute() or ".." in relative.parts:
+            continue
+        if any(part.lower() in SKIP_DIRS for part in relative.parts):
             continue
 
-        if any(part in SKIP_DIRS for part in path.parts):
+        name = relative.name.lower()
+        if any(name.endswith(suffix) for suffix in SKIP_EXT):
+            continue
+        if is_sensitive_path(relative):
             continue
 
-        if path.suffix.lower() in SKIP_EXT:
+        path = root_path / relative
+        # Do not follow a tracked symlink, including a symlinked parent
+        # directory that could point outside the checked-out repository.
+        if any(
+            (root_path / Path(*relative.parts[:index])).is_symlink()
+            for index in range(1, len(relative.parts) + 1)
+        ):
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+            resolved.relative_to(root_path)
+        except (OSError, ValueError):
+            continue
+        if not resolved.is_file():
             continue
 
         try:
-            text = path.read_text(
-                encoding="utf-8",
-                errors="ignore",
-            )
-        except Exception:
+            text = resolved.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
             continue
-
         if not text.strip():
             continue
-
         if len(text) > MAX_FILE_CHARS:
             text = text[:MAX_FILE_CHARS]
 
-        entry = f"\n--- FILE: {path} ---\n{text}\n"
-
+        entry = f"\n--- FILE: {relative.as_posix()} ---\n{text}\n"
         if current_size + len(entry) > MAX_BATCH_CHARS:
-            batches.append("".join(current))
+            if current:
+                batches.append("".join(current))
             current = []
             current_size = 0
 
@@ -127,6 +178,11 @@ def collect_batches(root="."):
 
 
 def call_groq(source_blob):
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY is required to run the scheduled code review.")
+    import requests
+
     messages = [
         {
             "role": "system",
@@ -141,7 +197,7 @@ def call_groq(source_blob):
     resp = requests.post(
         GROQ_URL,
         headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         json={
