@@ -100,7 +100,7 @@ def is_sensitive_path(path):
 
     if any(part in SENSITIVE_DIRS for part in parts):
         return True
-    if name == ".env" or name.startswith(".env."):
+    if name in {".env", ".envrc"} or name.startswith(".env.") or name.endswith(".env"):
         return True
     if name in SENSITIVE_NAMES:
         return True
