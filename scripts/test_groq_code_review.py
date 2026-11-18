@@ -1,4 +1,3 @@
-import os
 import subprocess
 import tempfile
 import unittest
@@ -49,7 +48,7 @@ class CodeReviewFileSelectionTests(unittest.TestCase):
             subprocess.run(["git", "add", "--all"], cwd=root, check=True)
             (root / "untracked.ts").write_text("UNTRACKED_DO_NOT_SEND", encoding="utf-8")
 
-            content = "\\n".join(collect_batches(root))
+            content = "\n".join(collect_batches(root))
 
             self.assertIn("src/app.ts", content)
             for marker in (
