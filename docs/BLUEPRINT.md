@@ -254,6 +254,8 @@ Environments: **production** + **local** (docker-compose PG). A dedicated stagin
 
 Scale path (documented now, built later): move pg-boss workers to a second Railway service → add Redis + Socket.io redis-adapter when horizontal API scaling is needed → read replica at ~50k orders/month. None of this changes application code structure.
 
+**Multi-instance auth-cache prerequisite:** `backend/api/src/plugins/auth.ts` keeps `userCache` and `driverVerifiedCache` in process-local `Map`s with a 60-second TTL. `invalidateUserCache()` and `invalidateDriverVerifiedCache()` evict only the current process. Before running multiple API instances, move these caches to a shared store or publish invalidation events to every instance; otherwise a user block/role change or driver-verification change can remain stale on another instance for up to 60 seconds. Keep the single-instance API topology until cross-instance invalidation is implemented and tested.
+
 ---
 
 # 6. Database Architecture
